@@ -1,16 +1,16 @@
-# project_planner
+# Enterprise Program Planner
 
-A new Flutter project.
+Flutter web project planner with runtime Firebase Authentication and Cloud Firestore setup.
 
-## Getting Started
+## Startup Firebase Config
 
-This project is a starting point for a Flutter application.
+If present, the app automatically loads `assets/firebase_credentials.js` on startup and connects to the Firebase project described in that file. If the asset is not bundled, the app falls back to the browser-saved Firebase config or the manual setup screen.
 
-A few resources to get you started if this is your first Flutter project:
+## Features
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+- Firebase email/password authentication
+- Project dashboards with tasks, issues, risks, actions, and decisions
+- Project-level phases and gantt timelines
+- Overview gantt chart across all visible projects
+- CSV import and export for project work items
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
