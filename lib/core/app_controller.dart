@@ -16,6 +16,9 @@ import 'services/firebase_credentials_store.dart';
 import 'services/csv_codec.dart';
 import 'services/csv_port_service.dart';
 import 'services/local_config_store.dart';
+import 'models/notification_model.dart';
+import 'models/project_grant.dart';
+import 'services/notification_repository.dart';
 import 'services/project_repository.dart';
 import 'services/runtime_firebase_service.dart';
 import 'services/task_repository.dart';
@@ -68,10 +71,51 @@ class AppController extends ChangeNotifier {
   String? _flashMessage;
   String? get flashMessage => _flashMessage;
 
+  // ── Impersonation ────────────────────────────────────────────────────────
+  AssigneeModel? _impersonatedAssignee;
+  bool get isImpersonating => _impersonatedAssignee != null;
+  AssigneeModel? get impersonatedAssignee => _impersonatedAssignee;
+
+  /// The actual logged-in user's SuperAdmin status, ignoring impersonation.
+  bool get isRealSuperAdmin => _isRealSuperAdmin;
+
+  void startImpersonation(String assigneeId) {
+    if (!_isRealSuperAdmin) return;
+    final target = _assignees.firstWhereOrNull((a) => a.id == assigneeId);
+    if (target == null) return;
+    // Cannot impersonate yourself
+    if (target.email.toLowerCase() == _user?.email?.trim().toLowerCase()) return;
+    _impersonatedAssignee = target;
+    _flashMessage =
+        'Viewing as ${target.name} (${roleLabel(target.role)}). Changes you make will still be saved as your own account.';
+    notifyListeners();
+  }
+
+  void stopImpersonation() {
+    final name = _impersonatedAssignee?.name ?? '';
+    _impersonatedAssignee = null;
+    _flashMessage = 'Stopped impersonating $name. Back to your own account.';
+    notifyListeners();
+  }
+
   StreamSubscription<User?>? _authSubscription;
   StreamSubscription<List<ProjectModel>>? _projectSubscription;
   StreamSubscription<List<TaskModel>>? _taskSubscription;
   StreamSubscription<List<AssigneeModel>>? _assigneeSubscription;
+  StreamSubscription<List<NotificationModel>>? _notificationSubscription;
+
+  List<NotificationModel> _notifications = const [];
+
+  List<NotificationModel> get visibleNotifications {
+    final assigneeId = _currentUserAssigneeId;
+    if (assigneeId == null) return const [];
+    return _notifications
+        .where((n) => n.recipientAssigneeId == assigneeId)
+        .toList(growable: false);
+  }
+
+  int get unreadNotificationCount =>
+      visibleNotifications.where((n) => !n.isRead).length;
 
   Future<void> bootstrap() async {
     _setViewState(_viewState.copyWith(isBootstrapping: true, clearError: true));
@@ -123,9 +167,11 @@ class AppController extends ChangeNotifier {
       await _projectSubscription?.cancel();
       await _authSubscription?.cancel();
       await _assigneeSubscription?.cancel();
+      await _notificationSubscription?.cancel();
       _tasks = const [];
       _projects = const [];
       _assignees = const [];
+      _notifications = const [];
       _user = null;
       _authService = null;
       _runtimeConfig = null;
@@ -273,11 +319,46 @@ class AppController extends ChangeNotifier {
 
   bool canEditProject(String projectId) => canManageStatuses(projectId);
 
-  bool canManageProjectWork(String projectId) => canEditProject(projectId);
+  bool canManageProjectWork(String projectId) {
+    if (canEditProject(projectId)) return true;
+    return _currentUserHasGrant(projectId, ProjectGrant.tasks);
+  }
+
+  bool canManageProjectRecords(String projectId, ProjectRecordType type) {
+    if (canEditProject(projectId)) return true;
+    return _currentUserHasGrant(projectId, ProjectGrant.forRecordType(type));
+  }
 
   bool get canManageAssignees => _isCurrentUserSuperAdmin || _assignees.isEmpty;
 
   bool get canCreateProjects => _isCurrentUserSuperAdmin;
+
+  /// Display name of the currently active user (respects impersonation).
+  String get currentUserName {
+    if (_impersonatedAssignee != null) return _impersonatedAssignee!.name;
+    final email = _user?.email?.trim().toLowerCase() ?? '';
+    final assignee = _assignees.firstWhereOrNull(
+      (a) => a.email.toLowerCase() == email,
+    );
+    if (assignee != null && assignee.name.isNotEmpty) return assignee.name;
+    final displayName = _user?.displayName?.trim() ?? '';
+    if (displayName.isNotEmpty) return displayName;
+    return email;
+  }
+
+  /// The [AssigneeModel] for the currently logged-in real user (not impersonated).
+  AssigneeModel? get currentUserAssignee {
+    final id = _realUserAssigneeId;
+    if (id == null) return null;
+    return _assignees.firstWhereOrNull((a) => a.id == id);
+  }
+
+  /// Role label of the currently active user (respects impersonation).
+  String get currentUserRoleLabel {
+    final role = _currentUserRole;
+    if (role == null) return '';
+    return roleLabel(role);
+  }
 
   bool canManageStatuses(String projectId) {
     if (_isCurrentUserSuperAdmin) {
@@ -288,7 +369,10 @@ class AppController extends ChangeNotifier {
       return true;
     }
 
-    final email = _user?.email?.trim().toLowerCase() ?? '';
+    // Use impersonated user's email when active, otherwise real user's email
+    final email = _impersonatedAssignee?.email.toLowerCase() ??
+        _user?.email?.trim().toLowerCase() ??
+        '';
     if (email.isEmpty) {
       return false;
     }
@@ -326,6 +410,16 @@ class AppController extends ChangeNotifier {
     required List<ProjectPhase> phases,
     required List<String> taskStatuses,
     required List<String> assignedAssigneeIds,
+    bool isConfidential = false,
+    String? actualStartStatus,
+    String? actualEndStatus,
+    String? actualStartResetStatus,
+    String? actualEndResetStatus,
+    bool allowSampleData = true,
+    List<int> workingDays = const [1, 2, 3, 4, 5],
+    int workDayStartHour = 9,
+    int workDayEndHour = 17,
+    List<DateTime> publicHolidays = const [],
     String? projectId,
   }) {
     return _withBusy(() async {
@@ -382,6 +476,18 @@ class AppController extends ChangeNotifier {
         colorValue: colorValue,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        isConfidential: _isCurrentUserSuperAdmin
+            ? isConfidential
+            : existing?.isConfidential ?? false,
+        actualStartStatus: actualStartStatus,
+        actualEndStatus: actualEndStatus,
+        actualStartResetStatus: actualStartResetStatus,
+        actualEndResetStatus: actualEndResetStatus,
+        allowSampleData: allowSampleData,
+        workingDays: workingDays,
+        workDayStartHour: workDayStartHour,
+        workDayEndHour: workDayEndHour,
+        publicHolidays: publicHolidays,
       );
       final savedProjectId = await _projectRepository().saveProject(project);
       final persistedProject = project.copyWith(id: savedProjectId);
@@ -395,6 +501,39 @@ class AppController extends ChangeNotifier {
       _flashMessage = existing == null
           ? 'Project created.'
           : 'Project updated.';
+    });
+  }
+
+  Future<void> saveProjectGrants({
+    required String projectId,
+    required Map<String, Set<String>> grantsByAssigneeId,
+  }) {
+    return _withBusy(() async {
+      if (!canEditProject(projectId)) {
+        throw Exception(
+            'Only a Project Admin can manage permissions for this project.');
+      }
+      for (final assignee in _assignees) {
+        final newGrants = grantsByAssigneeId[assignee.id] ?? {};
+        final existing = {...(assignee.projectGrants[projectId] ?? [])};
+        if (newGrants.difference(existing).isNotEmpty ||
+            existing.difference(newGrants).isNotEmpty) {
+          final updatedGrants = Map<String, List<String>>.from(
+            assignee.projectGrants,
+          );
+          if (newGrants.isEmpty) {
+            updatedGrants.remove(projectId);
+          } else {
+            updatedGrants[projectId] = newGrants.toList(growable: false);
+          }
+          await _assigneeRepository().saveAssignee(
+            assignee.copyWith(
+              projectGrants: updatedGrants,
+              updatedAt: DateTime.now(),
+            ),
+          );
+        }
+      }
     });
   }
 
@@ -443,7 +582,7 @@ class AppController extends ChangeNotifier {
       if (project == null) {
         throw Exception('Project not found.');
       }
-      if (!canEditProject(projectId)) {
+      if (!canManageProjectRecords(projectId, type)) {
         throw Exception('Only a Project Admin can add log entries.');
       }
 
@@ -457,6 +596,8 @@ class AppController extends ChangeNotifier {
             ? defaultRecordStatuses.first
             : status.trim(),
         createdAt: now,
+        updatedAt: now,
+        updatedBy: currentUserName,
         probability: type == ProjectRecordType.risk
             ? (probability ?? RiskProbability.medium)
             : null,
@@ -482,7 +623,84 @@ class AppController extends ChangeNotifier {
       };
 
       await _projectRepository().saveProject(updatedProject);
+      await _writeRecordAddedNotifications(
+        projectId: projectId,
+        type: type,
+        entryDescription: description.trim(),
+      );
       _flashMessage = '${_recordTypeLabel(type)} added.';
+    });
+  }
+
+  Future<void> updateProjectRecord({
+    required String projectId,
+    required ProjectRecordType type,
+    required String entryId,
+    String? assigneeId,
+    bool clearAssigneeId = false,
+    String? description,
+    String? comments,
+    String? status,
+    RiskProbability? probability,
+    bool clearProbability = false,
+  }) {
+    return _withBusy(() async {
+      final project = projectById(projectId);
+      if (project == null) {
+        throw Exception('Project not found.');
+      }
+      if (!canManageProjectRecords(projectId, type)) {
+        throw Exception('Only a Project Admin can edit log entries.');
+      }
+      final entries = List<ProjectRecordEntry>.from(
+        projectRecords(type, projectId),
+      );
+      final idx = entries.indexWhere((e) => e.id == entryId);
+      if (idx == -1) {
+        throw Exception('Entry not found.');
+      }
+      final existing = entries[idx];
+      final now = DateTime.now();
+      entries[idx] = ProjectRecordEntry(
+        id: existing.id,
+        assigneeId:
+            clearAssigneeId ? null : (assigneeId ?? existing.assigneeId),
+        description: description ?? existing.description,
+        comments: comments ?? existing.comments,
+        status: status ?? existing.status,
+        createdAt: existing.createdAt,
+        updatedAt: now,
+        updatedBy: currentUserName,
+        probability:
+            clearProbability ? null : (probability ?? existing.probability),
+      );
+      await _projectRepository().saveProject(
+        _projectWithUpdatedRecords(project, type, entries),
+      );
+      _flashMessage = '${_recordTypeLabel(type)} updated.';
+    });
+  }
+
+  Future<void> deleteProjectRecord({
+    required String projectId,
+    required ProjectRecordType type,
+    required String entryId,
+  }) {
+    return _withBusy(() async {
+      final project = projectById(projectId);
+      if (project == null) {
+        throw Exception('Project not found.');
+      }
+      if (!canManageProjectRecords(projectId, type)) {
+        throw Exception('Only a Project Admin can delete log entries.');
+      }
+      final entries = List<ProjectRecordEntry>.from(
+        projectRecords(type, projectId),
+      )..removeWhere((e) => e.id == entryId);
+      await _projectRepository().saveProject(
+        _projectWithUpdatedRecords(project, type, entries),
+      );
+      _flashMessage = '${_recordTypeLabel(type)} deleted.';
     });
   }
 
@@ -492,6 +710,8 @@ class AppController extends ChangeNotifier {
     required String projectId,
     required String status,
     required TaskPriority priority,
+    required DateTime? startDate,
+    required String duration,
     required DateTime? dueDate,
     required bool isMilestone,
     required List<String> predecessorTaskCodes,
@@ -499,11 +719,17 @@ class AppController extends ChangeNotifier {
     String? assigneeId,
     String? taskId,
     String? changeSummary,
+    DateTime? actualStartDate,
+    DateTime? actualEndDate,
   }) {
     return _withBusy(() async {
       final project = projectById(projectId);
       if (project == null) {
         throw Exception('Select a valid project before saving a task.');
+      }
+      if (!canManageProjectWork(projectId)) {
+        throw Exception(
+            'You do not have permission to add or edit tasks on this project.');
       }
 
       final normalizedStatus = status.trim();
@@ -560,7 +786,11 @@ class AppController extends ChangeNotifier {
         status: normalizedStatus,
         priority: priority,
         isMilestone: isMilestone,
+        startDate: startDate,
+        duration: duration.trim(),
         dueDate: dueDate,
+        actualStartDate: actualStartDate,
+        actualEndDate: actualEndDate,
         predecessorTaskCodes: normalizedPredecessors,
         assigneeId: assigneeId?.isEmpty ?? true ? null : assigneeId,
         phaseId: phaseId?.isEmpty ?? true ? null : phaseId,
@@ -570,9 +800,244 @@ class AppController extends ChangeNotifier {
         updatedAt: now,
       );
       await _taskRepository().saveTask(task);
+      await _writeTaskNotifications(task: task, existing: existing);
       _flashMessage = existing == null
           ? 'Task created with auto-generated ID $taskCode.'
           : 'Task updated.';
+    });
+  }
+
+  Future<void> generateSampleData(String projectId) {
+    return _withBusy(() async {
+      if (!canEditProject(projectId)) {
+        throw Exception('Only a Project Admin can generate sample data.');
+      }
+      final projectOrNull = projectById(projectId);
+      if (projectOrNull == null) throw Exception('Project not found.');
+      if (!projectOrNull.allowSampleData) {
+        throw Exception('Sample data generation is disabled for this project.');
+      }
+      var project = projectOrNull;
+      final now = DateTime.now();
+      // ── Sample assignees ─────────────────────────────────────────────────
+      final sampleAssignees = [
+        ('Alex Johnson', 'alex.johnson@example.com'),
+        ('Sam Rivera', 'sam.rivera@example.com'),
+        ('Jordan Lee', 'jordan.lee@example.com'),
+      ];
+      for (final (name, email) in sampleAssignees) {
+        final exists = _assignees.any(
+          (a) => a.email.toLowerCase() == email.toLowerCase(),
+        );
+        if (!exists) {
+          await _assigneeRepository().saveAssignee(
+            AssigneeModel(
+              id: '',
+              name: name,
+              email: email,
+              role: AssigneeRole.projectUser,
+              designation: 'Team Member',
+              workHours: 'Mon–Fri, 9:00–17:00',
+              projectIds: [projectId],
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+        } else {
+          // Ensure they are assigned to this project.
+          final existing =
+              _assignees.firstWhereOrNull((a) => a.email.toLowerCase() == email);
+          if (existing != null && !existing.projectIds.contains(projectId)) {
+            await _assigneeRepository().saveAssignee(
+              existing.copyWith(
+                projectIds: [...existing.projectIds, projectId],
+                updatedAt: now,
+              ),
+            );
+          }
+        }
+      }
+      // Reload assignees so task creation can reference their IDs.
+      _assignees = await _assigneeRepository().watchAssignees().first;
+
+      final assigneeIds = _assignees
+          .where((a) => a.projectIds.contains(projectId))
+          .map((a) => a.id)
+          .toList(growable: false);
+      String? _pick(int index) =>
+          assigneeIds.isEmpty ? null : assigneeIds[index % assigneeIds.length];
+
+      // ── Sample tasks ─────────────────────────────────────────────────────
+      final statuses = project.taskStatuses;
+      final sampleTasks = [
+        (
+          title: 'Define project requirements',
+          status: statuses.contains('New') ? 'New' : statuses.first,
+          priority: TaskPriority.high,
+          startDate: now,
+          duration: '3d',
+          dueDate: now.add(const Duration(days: 7)),
+          assignee: _pick(0),
+        ),
+        (
+          title: 'Design system architecture',
+          status: statuses.contains('In Progress') ? 'In Progress' : statuses.first,
+          priority: TaskPriority.high,
+          startDate: now.add(const Duration(days: 3)),
+          duration: '1w',
+          dueDate: now.add(const Duration(days: 14)),
+          assignee: _pick(1),
+        ),
+        (
+          title: 'Implement core features',
+          status: statuses.contains('Backlog') ? 'Backlog' : statuses.first,
+          priority: TaskPriority.medium,
+          startDate: now.add(const Duration(days: 10)),
+          duration: '2w',
+          dueDate: now.add(const Duration(days: 30)),
+          assignee: _pick(2),
+        ),
+        (
+          title: 'Write unit tests',
+          status: statuses.contains('New') ? 'New' : statuses.first,
+          priority: TaskPriority.medium,
+          startDate: now.add(const Duration(days: 14)),
+          duration: '1w',
+          dueDate: now.add(const Duration(days: 21)),
+          assignee: _pick(0),
+        ),
+        (
+          title: 'Deploy to production',
+          status: statuses.contains('Backlog') ? 'Backlog' : statuses.first,
+          priority: TaskPriority.low,
+          startDate: now.add(const Duration(days: 30)),
+          duration: '2d',
+          dueDate: now.add(const Duration(days: 45)),
+          assignee: _pick(1),
+        ),
+      ];
+      for (final t in sampleTasks) {
+        final taskCode = _generateNextTaskCode(projectId);
+        final task = TaskModel(
+          id: '',
+          taskCode: taskCode,
+          projectId: projectId,
+          title: t.title,
+          notes: '',
+          status: t.status,
+          priority: t.priority,
+          isMilestone: false,
+          startDate: t.startDate,
+          duration: t.duration,
+          dueDate: t.dueDate,
+          predecessorTaskCodes: const [],
+          assigneeId: t.assignee,
+          phaseId: null,
+          lastChangedAt: now,
+          changeLog: [TaskChangeLogEntry(changedAt: now, description: 'Sample task created')],
+          createdAt: now,
+          updatedAt: now,
+        );
+        await _taskRepository().saveTask(task);
+        // Reload tasks so next taskCode is correct.
+        _tasks = await _taskRepository().watchTasks().first;
+      }
+
+      // ── Sample issues ─────────────────────────────────────────────────────
+      final issueEntries = [
+        ('Login page not rendering on Safari', 'Reproduced on Safari 17. Needs investigation.'),
+        ('Data export fails for large datasets', 'Export times out when record count exceeds 10 000.'),
+      ];
+      for (final (desc, comments) in issueEntries) {
+        final id = _generateNextProjectRecordId(project, ProjectRecordType.issue);
+        final entry = ProjectRecordEntry(
+          id: id,
+          assigneeId: _pick(0),
+          description: desc,
+          comments: comments,
+          status: defaultRecordStatuses.first,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: currentUserName,
+        );
+        project = project.copyWith(
+          issueLog: [...project.issueLog, entry],
+          updatedAt: now,
+        );
+      }
+
+      // ── Sample risks ──────────────────────────────────────────────────────
+      final riskEntries = [
+        ('Third-party API rate limits may affect performance', 'Evaluate caching strategies.', RiskProbability.medium),
+        ('Key developer departure could delay timeline', 'Document knowledge and cross-train.', RiskProbability.high),
+      ];
+      for (final (desc, comments, prob) in riskEntries) {
+        final id = _generateNextProjectRecordId(project, ProjectRecordType.risk);
+        final entry = ProjectRecordEntry(
+          id: id,
+          assigneeId: _pick(1),
+          description: desc,
+          comments: comments,
+          status: defaultRecordStatuses.first,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: currentUserName,
+          probability: prob,
+        );
+        project = project.copyWith(
+          riskLog: [...project.riskLog, entry],
+          updatedAt: now,
+        );
+      }
+
+      // ── Sample actions ────────────────────────────────────────────────────
+      final actionEntries = [
+        ('Schedule weekly sync meetings', 'Set up recurring calendar invite for the team.'),
+        ('Set up CI/CD pipeline', 'Automate build, test, and deployment steps.'),
+      ];
+      for (final (desc, comments) in actionEntries) {
+        final id = _generateNextProjectRecordId(project, ProjectRecordType.action);
+        final entry = ProjectRecordEntry(
+          id: id,
+          assigneeId: _pick(2),
+          description: desc,
+          comments: comments,
+          status: defaultRecordStatuses.first,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: currentUserName,
+        );
+        project = project.copyWith(
+          actionLog: [...project.actionLog, entry],
+          updatedAt: now,
+        );
+      }
+
+      // ── Sample decisions ──────────────────────────────────────────────────
+      final decisionEntries = [
+        ('Use PostgreSQL as primary database', 'Chosen for ACID compliance and rich query support.'),
+        ('Adopt Agile methodology', 'Two-week sprints with daily standups.'),
+      ];
+      for (final (desc, comments) in decisionEntries) {
+        final id = _generateNextProjectRecordId(project, ProjectRecordType.decision);
+        final entry = ProjectRecordEntry(
+          id: id,
+          assigneeId: _pick(0),
+          description: desc,
+          comments: comments,
+          status: defaultRecordStatuses.first,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: currentUserName,
+        );
+        project = project.copyWith(
+          decisionLog: [...project.decisionLog, entry],
+          updatedAt: now,
+        );
+      }
+
+      await _projectRepository().saveProject(project);
+      _flashMessage = 'Sample data generated for ${project.projectCode}.';
     });
   }
 
@@ -617,6 +1082,7 @@ class AppController extends ChangeNotifier {
     required String designation,
     required String workHours,
     required List<String> projectIds,
+    List<OooRange> oooRanges = const [],
     String? assigneeId,
   }) {
     return _withBusy(() async {
@@ -661,11 +1127,29 @@ class AppController extends ChangeNotifier {
         projectIds: projectIds,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
+        oooRanges: oooRanges,
       );
       await _assigneeRepository().saveAssignee(assignee);
       _flashMessage = existing == null
           ? 'Assignee created.'
           : 'Assignee updated.';
+    });
+  }
+
+  /// Allows any authenticated user to update their own OOO ranges without
+  /// requiring the SuperAdmin role.
+  Future<void> saveMyOoo(List<OooRange> oooRanges) {
+    return _withBusy(() async {
+      final id = _currentUserAssigneeId;
+      final me = id == null
+          ? null
+          : _assignees.firstWhereOrNull((a) => a.id == id);
+      if (me == null) {
+        throw Exception('No profile found for the current user.');
+      }
+      final updated = me.copyWith(oooRanges: oooRanges);
+      await _assigneeRepository().saveAssignee(updated);
+      _flashMessage = 'Out-of-office dates saved.';
     });
   }
 
@@ -722,7 +1206,7 @@ class AppController extends ChangeNotifier {
           'assignee_name',
           'status',
           'priority',
-          'due_date',
+          'target_date',
           'is_milestone',
           'notes',
           'last_changed',
@@ -812,7 +1296,7 @@ class AppController extends ChangeNotifier {
           status: status,
           priority: _parsePriority(row['priority']),
           isMilestone: (row['is_milestone'] ?? '').toLowerCase() == 'true',
-          dueDate: _parseDate(row['due_date']),
+          dueDate: _parseDate(row['target_date']),
           predecessorTaskCodes: _splitPipeValues(row['predecessor_task_ids']),
           phaseId: _resolvePhaseIdForImport(
             project,
@@ -1079,11 +1563,13 @@ class AppController extends ChangeNotifier {
     await _projectSubscription?.cancel();
     await _taskSubscription?.cancel();
     await _assigneeSubscription?.cancel();
+    await _notificationSubscription?.cancel();
 
     if (user == null) {
       _projects = const [];
       _tasks = const [];
       _assignees = const [];
+      _notifications = const [];
       _setViewState(
         _viewState.copyWith(
           isAuthenticated: false,
@@ -1102,11 +1588,17 @@ class AppController extends ChangeNotifier {
     _taskSubscription = _taskRepository().watchTasks().listen((tasks) {
       _tasks = tasks;
       notifyListeners();
+      _checkDueDateNotifications();
     }, onError: _handleAsyncError);
     _assigneeSubscription = _assigneeRepository().watchAssignees().listen((
       assignees,
     ) {
       _assignees = assignees;
+      notifyListeners();
+    }, onError: _handleAsyncError);
+    _notificationSubscription =
+        _notificationRepository().watchNotifications().listen((notifications) {
+      _notifications = notifications;
       notifyListeners();
     }, onError: _handleAsyncError);
 
@@ -1188,7 +1680,9 @@ class AppController extends ChangeNotifier {
     if (_isCurrentUserSuperAdmin) {
       return List<ProjectModel>.from(_projects);
     }
-    final email = _user?.email?.trim().toLowerCase() ?? '';
+    final email = _impersonatedAssignee?.email.toLowerCase() ??
+        _user?.email?.trim().toLowerCase() ??
+        '';
     if (email.isEmpty) {
       return const [];
     }
@@ -1217,7 +1711,9 @@ class AppController extends ChangeNotifier {
     final visibleProjectIds = _visibleProjects
         .map((project) => project.id)
         .toSet();
-    final email = _user?.email?.trim().toLowerCase() ?? '';
+    final email = _impersonatedAssignee?.email.toLowerCase() ??
+        _user?.email?.trim().toLowerCase() ??
+        '';
     return _assignees
         .where((assignee) {
           final assignedToVisibleProject = assignee.projectIds.any(
@@ -1407,6 +1903,15 @@ class AppController extends ChangeNotifier {
     return AssigneeRepository(firestore: firestore, userId: user.uid);
   }
 
+  NotificationRepository _notificationRepository() {
+    final firestore = _runtimeFirebaseService.firestore;
+    final user = _user;
+    if (firestore == null || user == null) {
+      throw Exception('Not signed in.');
+    }
+    return NotificationRepository(firestore: firestore, userId: user.uid);
+  }
+
   Future<String> _resolveProjectForImport(Map<String, String> row) async {
     final incomingProjectCode = row['project_id']?.trim() ?? '';
     if (incomingProjectCode.isNotEmpty) {
@@ -1577,17 +2082,59 @@ class AppController extends ChangeNotifier {
   }
 
   AssigneeRole? get _currentUserRole {
+    // When impersonating, report the impersonated user's role
+    if (_impersonatedAssignee != null) return _impersonatedAssignee!.role;
     final email = _user?.email?.trim().toLowerCase() ?? '';
-    if (email.isEmpty) {
-      return null;
-    }
+    if (email.isEmpty) return null;
     return _assignees
         .firstWhereOrNull((assignee) => assignee.email.toLowerCase() == email)
         ?.role;
   }
 
+  String? get _currentUserAssigneeId {
+    final email = _impersonatedAssignee?.email.toLowerCase() ??
+        _user?.email?.trim().toLowerCase() ??
+        '';
+    if (email.isEmpty) return null;
+    return _assignees
+        .firstWhereOrNull((a) => a.email.toLowerCase() == email)
+        ?.id;
+  }
+
+  String? get _realUserAssigneeId {
+    final email = _user?.email?.trim().toLowerCase() ?? '';
+    if (email.isEmpty) return null;
+    return _assignees
+        .firstWhereOrNull((a) => a.email.toLowerCase() == email)
+        ?.id;
+  }
+
   bool get _isCurrentUserSuperAdmin =>
+      _impersonatedAssignee == null &&
       _currentUserRole == AssigneeRole.superAdmin;
+
+  bool _currentUserHasGrant(String projectId, String grant) {
+    final email = _impersonatedAssignee?.email.toLowerCase() ??
+        _user?.email?.trim().toLowerCase() ??
+        '';
+    if (email.isEmpty) return false;
+    final assignee =
+        _assignees.firstWhereOrNull((a) => a.email.toLowerCase() == email);
+    if (assignee == null) return false;
+    return assignee.projectGrants[projectId]?.contains(grant) ?? false;
+  }
+
+  /// Always reflects the real logged-in user, regardless of impersonation.
+  bool get _isRealSuperAdmin {
+    final email = _user?.email?.trim().toLowerCase() ?? '';
+    if (email.isEmpty) return false;
+    return _assignees
+            .firstWhereOrNull((a) => a.email.toLowerCase() == email)
+            ?.role ==
+        AssigneeRole.superAdmin;
+  }
+
+  bool get isSuperAdmin => _isCurrentUserSuperAdmin;
 
   String _resolveProjectOwnerEmail({
     required List<String> assignedAssigneeIds,
@@ -1663,12 +2210,17 @@ class AppController extends ChangeNotifier {
       return;
     }
 
-    if (!existing.projectIds.contains(project.id) ||
-        (existing.role != AssigneeRole.projectAdmin &&
-            existing.role != AssigneeRole.superAdmin)) {
+    final needsProjectId = !existing.projectIds.contains(project.id);
+    final needsRoleUpgrade = existing.role != AssigneeRole.projectAdmin &&
+        existing.role != AssigneeRole.superAdmin;
+
+    if (needsProjectId || needsRoleUpgrade) {
       await _assigneeRepository().saveAssignee(
         existing.copyWith(
-          role: AssigneeRole.projectAdmin,
+          // Only promote to projectAdmin — never demote a superAdmin
+          role: existing.role == AssigneeRole.superAdmin
+              ? AssigneeRole.superAdmin
+              : AssigneeRole.projectAdmin,
           projectIds: {
             ...existing.projectIds,
             project.id,
@@ -1679,12 +2231,187 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  // ── Notification actions (no busy spinner — low-friction UX) ────────────
+
+  Future<void> markNotificationRead(String notificationId) async {
+    try {
+      await _notificationRepository().markRead(notificationId);
+    } catch (error) {
+      _handleAsyncError(error);
+    }
+  }
+
+  Future<void> markAllNotificationsRead() async {
+    final assigneeId = _currentUserAssigneeId;
+    if (assigneeId == null) return;
+    try {
+      await _notificationRepository().markAllRead(assigneeId);
+    } catch (error) {
+      _handleAsyncError(error);
+    }
+  }
+
+  Future<void> dismissNotification(String notificationId) async {
+    try {
+      await _notificationRepository().deleteNotification(notificationId);
+    } catch (error) {
+      _handleAsyncError(error);
+    }
+  }
+
+  // ── Notification helpers ─────────────────────────────────────────────────
+
+  Future<void> _checkDueDateNotifications() async {
+    if (_user == null) return;
+    final today = DateTime.now();
+    final todayDate = DateTime(today.year, today.month, today.day);
+
+    for (final task in _tasks) {
+      if (task.assigneeId == null || task.assigneeId!.isEmpty) continue;
+      if (task.isCompleted) continue;
+      if (task.dueDate == null) continue;
+
+      final taskDueDate = DateTime(
+        task.dueDate!.year,
+        task.dueDate!.month,
+        task.dueDate!.day,
+      );
+      if (taskDueDate.isAfter(todayDate)) continue;
+
+      final assigneeId = task.assigneeId!;
+      try {
+        final alreadyExists =
+            await _notificationRepository().taskDueNotificationExists(
+          taskId: task.id,
+          recipientAssigneeId: assigneeId,
+        );
+        if (alreadyExists) continue;
+
+        final project = projectById(task.projectId);
+        final projectLabel = project?.projectCode ?? task.projectId;
+        final isOverdue = taskDueDate.isBefore(todayDate);
+        final dueDateLabel = DateFormat('yyyy-MM-dd').format(task.dueDate!);
+
+        await _notificationRepository().addNotification(
+          NotificationModel(
+            id: '',
+            recipientAssigneeId: assigneeId,
+            type: NotificationType.taskDue,
+            title: isOverdue
+                ? 'Task overdue: ${task.title}'
+                : 'Task due today: ${task.title}',
+            body: '$projectLabel · Due $dueDateLabel',
+            projectId: task.projectId,
+            taskId: task.id,
+            isRead: false,
+            createdAt: DateTime.now(),
+          ),
+        );
+      } catch (_) {
+        // Notification failure should not surface as a task error.
+      }
+    }
+  }
+
+  Future<void> _writeTaskNotifications({
+    required TaskModel task,
+    required TaskModel? existing,
+  }) async {
+    final assigneeId = task.assigneeId;
+    if (assigneeId == null || assigneeId.isEmpty) return;
+
+    final now = DateTime.now();
+    final project = projectById(task.projectId);
+    final projectLabel = project?.projectCode ?? task.projectId;
+    final dueDateLabel = task.dueDate != null
+        ? DateFormat('yyyy-MM-dd').format(task.dueDate!)
+        : 'No due date';
+
+    final assigneeChanged = existing?.assigneeId != task.assigneeId;
+    if (assigneeChanged) {
+      try {
+        await _notificationRepository().addNotification(
+          NotificationModel(
+            id: '',
+            recipientAssigneeId: assigneeId,
+            type: NotificationType.taskAssigned,
+            title: 'Task assigned: ${task.title}',
+            body: '$projectLabel · Due $dueDateLabel',
+            projectId: task.projectId,
+            taskId: task.id.isEmpty ? null : task.id,
+            isRead: false,
+            createdAt: now,
+          ),
+        );
+      } catch (_) {}
+    }
+
+    final statusChanged = existing != null &&
+        existing.status != task.status &&
+        !assigneeChanged;
+    if (statusChanged) {
+      try {
+        await _notificationRepository().addNotification(
+          NotificationModel(
+            id: '',
+            recipientAssigneeId: assigneeId,
+            type: NotificationType.taskStatusChanged,
+            title: 'Task status changed: ${task.title}',
+            body: '$projectLabel · ${existing.status} → ${task.status}',
+            projectId: task.projectId,
+            taskId: task.id.isEmpty ? null : task.id,
+            isRead: false,
+            createdAt: now,
+          ),
+        );
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _writeRecordAddedNotifications({
+    required String projectId,
+    required ProjectRecordType type,
+    required String entryDescription,
+  }) async {
+    final members = _assignees
+        .where((a) => a.projectIds.contains(projectId))
+        .toList(growable: false);
+    if (members.isEmpty) return;
+
+    final now = DateTime.now();
+    final project = projectById(projectId);
+    final projectLabel = project?.projectCode ?? projectId;
+    final typeLabel = _recordTypeLabel(type);
+    final bodyText = entryDescription.length > 80
+        ? '${entryDescription.substring(0, 80)}…'
+        : entryDescription;
+
+    for (final member in members) {
+      try {
+        await _notificationRepository().addNotification(
+          NotificationModel(
+            id: '',
+            recipientAssigneeId: member.id,
+            type: NotificationType.recordAdded,
+            title: '$typeLabel added to $projectLabel',
+            body: bodyText,
+            projectId: projectId,
+            taskId: null,
+            isRead: false,
+            createdAt: now,
+          ),
+        );
+      } catch (_) {}
+    }
+  }
+
   @override
   Future<void> dispose() async {
     await _authSubscription?.cancel();
     await _projectSubscription?.cancel();
     await _taskSubscription?.cancel();
     await _assigneeSubscription?.cancel();
+    await _notificationSubscription?.cancel();
     super.dispose();
   }
 }

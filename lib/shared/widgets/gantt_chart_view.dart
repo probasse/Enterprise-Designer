@@ -24,14 +24,14 @@ class GanttChartView extends StatefulWidget {
     super.key,
     required this.entries,
     this.initialScale = GanttScale.weekly,
-    this.labelWidth = 320,
     this.emptyMessage = 'No dated items yet.',
+    this.publicHolidays = const [],
   });
 
   final List<GanttChartEntry> entries;
   final GanttScale initialScale;
-  final double labelWidth;
   final String emptyMessage;
+  final List<DateTime> publicHolidays;
 
   @override
   State<GanttChartView> createState() => _GanttChartViewState();
@@ -39,6 +39,11 @@ class GanttChartView extends StatefulWidget {
 
 class _GanttChartViewState extends State<GanttChartView> {
   late GanttScale _scale;
+
+  // Label column width is derived from available space via LayoutBuilder.
+  static const double _minLabelWidth = 140.0;
+  static const double _maxLabelWidth = 280.0;
+  static const double _labelFraction = 0.28; // 28 % of total width
 
   @override
   void initState() {
@@ -49,200 +54,267 @@ class _GanttChartViewState extends State<GanttChartView> {
   @override
   Widget build(BuildContext context) {
     final usableEntries = widget.entries
-        .where((entry) => entry.start != null || entry.end != null)
+        .where((e) => e.start != null || e.end != null)
         .toList(growable: false);
     if (usableEntries.isEmpty) {
       return Text(widget.emptyMessage);
     }
 
-    final bounds = _boundsFor(usableEntries);
-    final cellDays = _cellDays(_scale);
-    final cellWidth = _cellWidth(_scale);
-    final totalCells =
-        (((bounds.end.difference(bounds.start).inDays + 1) / cellDays)
-                .ceil()
-                .clamp(1, 1000))
-            .toInt();
-    final cells = List<DateTime>.generate(
-      totalCells,
-      (index) => bounds.start.add(Duration(days: index * cellDays)),
-    );
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final labelWidth = (constraints.maxWidth * _labelFraction)
+            .clamp(_minLabelWidth, _maxLabelWidth);
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Align(
-          alignment: Alignment.centerLeft,
-          child: SegmentedButton<GanttScale>(
-            segments: const [
-              ButtonSegment(value: GanttScale.daily, label: Text('Daily')),
-              ButtonSegment(value: GanttScale.weekly, label: Text('Weekly')),
-              ButtonSegment(value: GanttScale.monthly, label: Text('Monthly')),
-              ButtonSegment(
-                value: GanttScale.quarterly,
-                label: Text('Quarterly'),
+        final bounds = _boundsFor(usableEntries);
+        final cellDays = _cellDays(_scale);
+        final cellWidth = _cellWidth(_scale);
+        final totalCells =
+            (((bounds.end.difference(bounds.start).inDays + 1) / cellDays)
+                    .ceil()
+                    .clamp(1, 1000))
+                .toInt();
+        final cells = List<DateTime>.generate(
+          totalCells,
+          (i) => bounds.start.add(Duration(days: i * cellDays)),
+        );
+        final trackWidth = totalCells * cellWidth;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Scale selector
+            Align(
+              alignment: Alignment.centerLeft,
+              child: SegmentedButton<GanttScale>(
+                segments: const [
+                  ButtonSegment(value: GanttScale.daily, label: Text('Daily')),
+                  ButtonSegment(
+                      value: GanttScale.weekly, label: Text('Weekly')),
+                  ButtonSegment(
+                      value: GanttScale.monthly, label: Text('Monthly')),
+                  ButtonSegment(
+                      value: GanttScale.quarterly, label: Text('Quarterly')),
+                ],
+                selected: {_scale},
+                onSelectionChanged: (s) =>
+                    setState(() => _scale = s.first),
               ),
-            ],
-            selected: {_scale},
-            onSelectionChanged: (selection) {
-              setState(() => _scale = selection.first);
-            },
-          ),
-        ),
-        const SizedBox(height: 16),
-        SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: widget.labelWidth + (totalCells * cellWidth),
-            child: Column(
-              children: [
-                _buildHeader(context, cells, cellWidth),
-                const SizedBox(height: 12),
-                for (final entry in usableEntries)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: widget.labelWidth,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                entry.label,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 16),
+            // Scrollable grid: header + rows share identical column widths
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ── Header ──────────────────────────────────────────────
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Empty corner above label column
+                      SizedBox(width: labelWidth),
+                      // Header columns — exact same trackWidth as bars below
+                      SizedBox(
+                        width: trackWidth,
+                        child: _buildHeader(
+                            context, cells, cellWidth, trackWidth),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  // ── Data rows ───────────────────────────────────────────
+                  for (final entry in usableEntries)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          // Label column — matches header corner width
+                          SizedBox(
+                            width: labelWidth,
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 12),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    entry.label,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .titleSmall,
+                                  ),
+                                  if (entry.subtitle.isNotEmpty)
+                                    Text(
+                                      entry.subtitle,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall,
+                                    ),
+                                ],
                               ),
-                              Text(entry.subtitle),
-                            ],
+                            ),
                           ),
-                        ),
-                        Expanded(
-                          child: SizedBox(
+                          // Bar track — exact same width as header columns
+                          SizedBox(
+                            width: trackWidth,
                             height: 28,
                             child: Stack(
                               children: [
+                                // Background track
                                 Positioned.fill(
                                   child: DecoratedBox(
                                     decoration: BoxDecoration(
-                                      border: Border.all(color: Colors.black12),
-                                      borderRadius: BorderRadius.circular(8),
+                                      border:
+                                          Border.all(color: Colors.black12),
+                                      borderRadius:
+                                          BorderRadius.circular(8),
                                     ),
                                   ),
                                 ),
+                                // Holiday overlays (daily scale only — too narrow otherwise)
+                                if (_scale == GanttScale.daily)
+                                  ...cells
+                                    .where((cell) => _cellIsHoliday(cell, cellDays))
+                                    .map((cell) => Positioned(
+                                        left: _barLeft(bounds.start, cell, cellDays, cellWidth),
+                                        width: cellWidth,
+                                        top: 0,
+                                        bottom: 0,
+                                        child: DecoratedBox(
+                                          decoration: BoxDecoration(
+                                            color: Colors.grey.withValues(alpha: 0.25),
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                        ),
+                                      )),
+                                // Bar
                                 if (entry.start != null || entry.end != null)
                                   Positioned(
-                                    left:
-                                        _offsetDays(
-                                          bounds.start,
-                                          entry.start ?? entry.end!,
-                                        ) /
-                                        cellDays *
-                                        cellWidth,
-                                    width:
-                                        ((_durationDays(
-                                                  entry.start ?? entry.end!,
-                                                  entry.end ?? entry.start!,
-                                                ) +
-                                                1) /
-                                            cellDays) *
-                                        cellWidth,
+                                    left: _barLeft(
+                                      bounds.start,
+                                      entry.start ?? entry.end!,
+                                      cellDays,
+                                      cellWidth,
+                                    ),
+                                    width: _barWidth(
+                                      entry.start ?? entry.end!,
+                                      entry.end ?? entry.start!,
+                                      cellDays,
+                                      cellWidth,
+                                    ),
                                     top: 3,
                                     bottom: 3,
                                     child: DecoratedBox(
                                       decoration: BoxDecoration(
                                         color: entry.color,
-                                        borderRadius: BorderRadius.circular(8),
+                                        borderRadius:
+                                            BorderRadius.circular(8),
                                       ),
                                     ),
                                   ),
                               ],
                             ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ),
-      ],
+          ],
+        );
+      },
     );
   }
+
+  // ── Header builder ──────────────────────────────────────────────────────
 
   Widget _buildHeader(
     BuildContext context,
     List<DateTime> cells,
     double cellWidth,
+    double trackWidth,
   ) {
     final textTheme = Theme.of(context).textTheme;
     switch (_scale) {
       case GanttScale.daily:
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildGroupedHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => DateFormat('MMMM yyyy').format(value),
+              labelBuilder: (v) => DateFormat('MMM yyyy').format(v),
+              groupKeyOf: (v) => '${v.year}-${v.month}',
               style: textTheme.labelSmall,
             ),
             _buildCellHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => DateFormat('d').format(value),
+              labelBuilder: (v) => DateFormat('d').format(v),
               style: textTheme.labelSmall,
+              highlightHolidays: true,
             ),
           ],
         );
       case GanttScale.weekly:
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildCellHeaderRow(
+            _buildGroupedHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => 'Week ${_weekOfYear(value)}',
+              labelBuilder: (v) => DateFormat('MMM yyyy').format(v),
+              groupKeyOf: (v) => '${v.year}-${v.month}',
               style: textTheme.labelSmall,
             ),
             _buildCellHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => DateFormat('d MMM').format(value),
+              labelBuilder: (v) =>
+                  'W${_weekOfYear(v)}\n${DateFormat('d MMM').format(v)}',
               style: textTheme.labelSmall,
             ),
           ],
         );
       case GanttScale.monthly:
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildGroupedHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => '${value.year}',
+              labelBuilder: (v) => '${v.year}',
+              groupKeyOf: (v) => '${v.year}',
               style: textTheme.labelSmall,
             ),
             _buildCellHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => DateFormat('MMM').format(value),
+              labelBuilder: (v) => DateFormat('MMM').format(v),
               style: textTheme.labelSmall,
             ),
           ],
         );
       case GanttScale.quarterly:
         return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildGroupedHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => '${value.year}',
+              labelBuilder: (v) => '${v.year}',
+              groupKeyOf: (v) => '${v.year}',
               style: textTheme.labelSmall,
             ),
             _buildCellHeaderRow(
               cells: cells,
               cellWidth: cellWidth,
-              labelBuilder: (value) => 'Q${((value.month - 1) ~/ 3) + 1}',
+              labelBuilder: (v) => 'Q${((v.month - 1) ~/ 3) + 1}',
               style: textTheme.labelSmall,
             ),
           ],
@@ -253,51 +325,93 @@ class _GanttChartViewState extends State<GanttChartView> {
   Widget _buildGroupedHeaderRow({
     required List<DateTime> cells,
     required double cellWidth,
-    required String Function(DateTime value) labelBuilder,
+    required String Function(DateTime) labelBuilder,
+    required String Function(DateTime) groupKeyOf,
     required TextStyle? style,
   }) {
     final children = <Widget>[];
-    var index = 0;
-    while (index < cells.length) {
-      final groupStart = cells[index];
-      final groupKey = _headerGroupKey(groupStart);
-      var runLength = 1;
-      while (index + runLength < cells.length &&
-          _headerGroupKey(cells[index + runLength]) == groupKey) {
-        runLength++;
+    var i = 0;
+    while (i < cells.length) {
+      final groupKey = groupKeyOf(cells[i]);
+      var run = 1;
+      while (i + run < cells.length && groupKeyOf(cells[i + run]) == groupKey) {
+        run++;
       }
       children.add(
         SizedBox(
-          width: cellWidth * runLength,
+          width: cellWidth * run,
           child: Padding(
             padding: const EdgeInsets.only(right: 2, bottom: 4),
-            child: Text(labelBuilder(groupStart), style: style),
+            child: Text(
+              labelBuilder(cells[i]),
+              style: style,
+              overflow: TextOverflow.ellipsis,
+            ),
           ),
         ),
       );
-      index += runLength;
+      i += run;
     }
-    return Row(children: children);
+    return Row(crossAxisAlignment: CrossAxisAlignment.start, children: children);
   }
 
   Widget _buildCellHeaderRow({
     required List<DateTime> cells,
     required double cellWidth,
-    required String Function(DateTime value) labelBuilder,
+    required String Function(DateTime) labelBuilder,
     required TextStyle? style,
+    bool highlightHolidays = false,
   }) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         for (final cell in cells)
           SizedBox(
             width: cellWidth,
-            child: Padding(
+            child: Container(
+              decoration: (highlightHolidays && _cellIsHoliday(cell, 1))
+                  ? BoxDecoration(
+                      color: Colors.grey.withValues(alpha: 0.20),
+                      borderRadius: BorderRadius.circular(4),
+                    )
+                  : null,
               padding: const EdgeInsets.only(right: 2, bottom: 4),
-              child: Text(labelBuilder(cell), style: style),
+              child: Text(
+                labelBuilder(cell),
+                style: (highlightHolidays && _cellIsHoliday(cell, 1))
+                    ? style?.copyWith(color: Colors.grey)
+                    : style,
+                softWrap: true,
+                overflow: TextOverflow.visible,
+              ),
             ),
           ),
       ],
     );
+  }
+
+  // ── Geometry helpers ────────────────────────────────────────────────────
+
+  /// Left offset of a bar in pixels.
+  double _barLeft(
+    DateTime boundsStart,
+    DateTime entryStart,
+    int cellDays,
+    double cellWidth,
+  ) {
+    final offsetDays = _offsetDays(boundsStart, entryStart);
+    return (offsetDays / cellDays) * cellWidth;
+  }
+
+  /// Width of a bar in pixels (minimum 1 cell wide for milestones / same-day).
+  double _barWidth(
+    DateTime start,
+    DateTime end,
+    int cellDays,
+    double cellWidth,
+  ) {
+    final days = _durationDays(start, end) + 1;
+    return (days / cellDays).clamp(1.0 / cellDays, double.infinity) * cellWidth;
   }
 
   int _cellDays(GanttScale scale) {
@@ -316,25 +430,13 @@ class _GanttChartViewState extends State<GanttChartView> {
   double _cellWidth(GanttScale scale) {
     switch (scale) {
       case GanttScale.daily:
-        return 18;
+        return 22;
       case GanttScale.weekly:
-        return 42;
+        return 60;
       case GanttScale.monthly:
-        return 64;
+        return 68;
       case GanttScale.quarterly:
-        return 84;
-    }
-  }
-
-  String _headerGroupKey(DateTime value) {
-    switch (_scale) {
-      case GanttScale.daily:
-        return '${value.year}-${value.month}';
-      case GanttScale.weekly:
-        return '${value.year}-${value.month}-${value.day}';
-      case GanttScale.monthly:
-      case GanttScale.quarterly:
-        return '${value.year}';
+        return 90;
     }
   }
 
@@ -345,8 +447,7 @@ class _GanttChartViewState extends State<GanttChartView> {
     final firstThursday = DateTime(thursday.year, 1, 4);
     final firstWeekThursday = firstThursday.add(
       Duration(
-        days:
-            4 -
+        days: 4 -
             (firstThursday.weekday == DateTime.sunday
                 ? 7
                 : firstThursday.weekday),
@@ -357,12 +458,12 @@ class _GanttChartViewState extends State<GanttChartView> {
 
   _GanttBounds _boundsFor(List<GanttChartEntry> entries) {
     final starts = entries
-        .where((entry) => entry.start != null)
-        .map((entry) => entry.start!)
+        .where((e) => e.start != null)
+        .map((e) => e.start!)
         .toList();
     final ends = entries
-        .where((entry) => entry.end != null)
-        .map((entry) => entry.end!)
+        .where((e) => e.end != null)
+        .map((e) => e.end!)
         .toList();
     final start = starts.reduce((a, b) => a.isBefore(b) ? a : b);
     final end = ends.reduce((a, b) => a.isAfter(b) ? a : b);
@@ -373,25 +474,32 @@ class _GanttChartViewState extends State<GanttChartView> {
   }
 
   int _offsetDays(DateTime start, DateTime value) {
-    return DateTime(
-      value.year,
-      value.month,
-      value.day,
-    ).difference(DateTime(start.year, start.month, start.day)).inDays;
+    return DateTime(value.year, value.month, value.day)
+        .difference(DateTime(start.year, start.month, start.day))
+        .inDays;
   }
 
   int _durationDays(DateTime start, DateTime end) {
-    return DateTime(
-      end.year,
-      end.month,
-      end.day,
-    ).difference(DateTime(start.year, start.month, start.day)).inDays;
+    return DateTime(end.year, end.month, end.day)
+        .difference(DateTime(start.year, start.month, start.day))
+        .inDays;
+  }
+
+  /// Returns true if any public holiday falls within the cell's date range.
+  bool _cellIsHoliday(DateTime cellStart, int cellDays) {
+    if (widget.publicHolidays.isEmpty) return false;
+    final cellEnd = cellStart.add(Duration(days: cellDays - 1));
+    return widget.publicHolidays.any((h) {
+      final hd = DateTime(h.year, h.month, h.day);
+      final cs = DateTime(cellStart.year, cellStart.month, cellStart.day);
+      final ce = DateTime(cellEnd.year, cellEnd.month, cellEnd.day);
+      return !hd.isBefore(cs) && !hd.isAfter(ce);
+    });
   }
 }
 
 class _GanttBounds {
   const _GanttBounds({required this.start, required this.end});
-
   final DateTime start;
   final DateTime end;
 }

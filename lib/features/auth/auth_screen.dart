@@ -42,12 +42,19 @@ class _AuthScreenState extends State<AuthScreen> {
               constraints: const BoxConstraints(maxWidth: 1120),
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  children: [
-                    SizedBox(
-                      width: 420,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth >= 700;
+                    final infoWidth = isWide
+                        ? (constraints.maxWidth * 0.38).clamp(300.0, 440.0)
+                        : constraints.maxWidth;
+                    final formWidth = isWide
+                        ? (constraints.maxWidth - infoWidth - 24)
+                            .clamp(280.0, 540.0)
+                        : constraints.maxWidth;
+
+                    final infoCard = SizedBox(
+                      width: infoWidth,
                       child: SectionCard(
                         title: 'Focused planning, your data',
                         subtitle:
@@ -55,41 +62,37 @@ class _AuthScreenState extends State<AuthScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'What you can do',
-                              style: theme.textTheme.titleLarge,
-                            ),
+                            Text('What you can do',
+                                style: theme.textTheme.titleLarge),
                             const SizedBox(height: 14),
                             const _InfoRow(
-                              text: 'Track projects with color-coded status.',
-                            ),
+                                text:
+                                    'Track projects with color-coded status.'),
                             const _InfoRow(
-                              text: 'Manage tasks, priorities, and due dates.',
-                            ),
+                                text:
+                                    'Manage tasks, priorities, and due dates.'),
                             const _InfoRow(
-                              text:
-                                  'See upcoming deadlines in a calendar-oriented view.',
-                            ),
+                                text:
+                                    'See upcoming deadlines in a calendar-oriented view.'),
                             const SizedBox(height: 22),
                             OutlinedButton.icon(
                               onPressed: widget.controller.isBusy
                                   ? null
                                   : widget.controller.resetFirebase,
                               icon: const Icon(
-                                Icons.settings_backup_restore_rounded,
-                              ),
+                                  Icons.settings_backup_restore_rounded),
                               label: const Text('Reset Firebase connection'),
                             ),
                           ],
                         ),
                       ),
-                    ),
-                    SizedBox(
-                      width: 520,
+                    );
+
+                    final formCard = SizedBox(
+                      width: formWidth,
                       child: SectionCard(
-                        title: _isSignInMode
-                            ? 'Welcome back'
-                            : 'Create account',
+                        title:
+                            _isSignInMode ? 'Welcome back' : 'Create account',
                         subtitle:
                             'Email/password sign-in must be enabled in your Firebase project.',
                         child: Column(
@@ -97,17 +100,15 @@ class _AuthScreenState extends State<AuthScreen> {
                             TextField(
                               controller: _emailController,
                               keyboardType: TextInputType.emailAddress,
-                              decoration: const InputDecoration(
-                                labelText: 'Email',
-                              ),
+                              decoration:
+                                  const InputDecoration(labelText: 'Email'),
                             ),
                             const SizedBox(height: 14),
                             TextField(
                               controller: _passwordController,
                               obscureText: true,
                               decoration: const InputDecoration(
-                                labelText: 'Password',
-                              ),
+                                  labelText: 'Password'),
                             ),
                             const SizedBox(height: 20),
                             SizedBox(
@@ -120,8 +121,8 @@ class _AuthScreenState extends State<AuthScreen> {
                                   widget.controller.isBusy
                                       ? 'Working...'
                                       : (_isSignInMode
-                                            ? 'Sign in'
-                                            : 'Create account'),
+                                          ? 'Sign in'
+                                          : 'Create account'),
                                 ),
                               ),
                             ),
@@ -132,11 +133,8 @@ class _AuthScreenState extends State<AuthScreen> {
                                   child: TextButton(
                                     onPressed: widget.controller.isBusy
                                         ? null
-                                        : () {
-                                            setState(() {
-                                              _isSignInMode = !_isSignInMode;
-                                            });
-                                          },
+                                        : () => setState(() =>
+                                            _isSignInMode = !_isSignInMode),
                                     child: Text(
                                       _isSignInMode
                                           ? 'Need an account? Sign up'
@@ -155,8 +153,30 @@ class _AuthScreenState extends State<AuthScreen> {
                           ],
                         ),
                       ),
-                    ),
-                  ],
+                    );
+
+                    if (isWide) {
+                      return SingleChildScrollView(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            infoCard,
+                            const SizedBox(width: 24),
+                            formCard,
+                          ],
+                        ),
+                      );
+                    }
+                    return SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          infoCard,
+                          const SizedBox(height: 24),
+                          formCard,
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -169,10 +189,7 @@ class _AuthScreenState extends State<AuthScreen> {
   Future<void> _submit() async {
     final email = _emailController.text.trim();
     final password = _passwordController.text;
-    if (email.isEmpty || password.isEmpty) {
-      return;
-    }
-
+    if (email.isEmpty || password.isEmpty) return;
     if (_isSignInMode) {
       await widget.controller.signIn(email, password);
     } else {
@@ -182,9 +199,7 @@ class _AuthScreenState extends State<AuthScreen> {
 
   Future<void> _resetPassword() async {
     final email = _emailController.text.trim();
-    if (email.isEmpty) {
-      return;
-    }
+    if (email.isEmpty) return;
     await widget.controller.sendPasswordReset(email);
   }
 }

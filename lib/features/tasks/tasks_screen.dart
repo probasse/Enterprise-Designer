@@ -21,13 +21,10 @@ class TasksScreen extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Wrap(
-            spacing: 12,
-            runSpacing: 12,
-            crossAxisAlignment: WrapCrossAlignment.center,
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              SizedBox(
-                width: 520,
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -43,6 +40,14 @@ class TasksScreen extends StatelessWidget {
                   ],
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
               ElevatedButton.icon(
                 onPressed: controller.projects.isEmpty
                     ? null
@@ -73,8 +78,8 @@ class TasksScreen extends StatelessWidget {
               runSpacing: 16,
               crossAxisAlignment: WrapCrossAlignment.center,
               children: [
-                SizedBox(
-                  width: 220,
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 160, maxWidth: 260),
                   child: DropdownButtonFormField<String?>(
                     initialValue: controller.taskFilter.projectId,
                     decoration: const InputDecoration(labelText: 'Project'),
@@ -101,8 +106,8 @@ class TasksScreen extends StatelessWidget {
                     },
                   ),
                 ),
-                SizedBox(
-                  width: 220,
+                ConstrainedBox(
+                  constraints: const BoxConstraints(minWidth: 160, maxWidth: 260),
                   child: DropdownButtonFormField<String?>(
                     initialValue: controller.taskFilter.status,
                     decoration: const InputDecoration(labelText: 'Status'),
@@ -241,8 +246,7 @@ class _TaskTile extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Container(
-              width: 14,
-              height: 130,
+              width: 6,
               decoration: BoxDecoration(
                 color: _priorityColor(task.priority),
                 borderRadius: BorderRadius.circular(999),
@@ -274,8 +278,8 @@ class _TaskTile extends StatelessWidget {
                     children: [
                       Text(
                         task.dueDate == null
-                            ? 'No due date'
-                            : 'Due ${DateFormat('EEE, MMM d').format(task.dueDate!)}',
+                            ? 'No target date'
+                            : 'Target ${DateFormat('EEE, MMM d HH:mm').format(task.dueDate!)}',
                       ),
                       Text('Assignee: $assigneeName'),
                       Text('Phase: $phaseName'),
@@ -429,7 +433,7 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
     return AlertDialog(
       title: Text(widget.initialTask == null ? 'New task' : 'Edit task'),
       content: SizedBox(
-        width: 560,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 560.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -610,8 +614,8 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
                   Expanded(
                     child: Text(
                       _dueDate == null
-                          ? 'No due date selected'
-                          : 'Due ${DateFormat('MMM d, yyyy').format(_dueDate!)}',
+                          ? 'No target date selected'
+                          : 'Target ${DateFormat('MMM d, yyyy HH:mm').format(_dueDate!)}',
                     ),
                   ),
                   TextButton(
@@ -636,12 +640,16 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
         ),
         ElevatedButton(
           onPressed: () async {
+            final project = widget.controller.projectById(_projectId);
+            final now = DateTime.now();
             await widget.controller.saveTask(
               title: _titleController.text,
               notes: _notesController.text,
               projectId: _projectId,
               status: _status,
               priority: _priority,
+              startDate: null,
+              duration: '',
               dueDate: _dueDate,
               isMilestone: _isMilestone,
               predecessorTaskCodes: _predecessorTaskCodes.toList(
@@ -650,6 +658,16 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
               phaseId: _phaseId,
               assigneeId: _assigneeId,
               taskId: widget.initialTask?.id,
+              actualStartDate: _status == project?.actualStartStatus
+                  ? now
+                  : _status == project?.actualStartResetStatus
+                      ? null
+                      : widget.initialTask?.actualStartDate,
+              actualEndDate: _status == project?.actualEndStatus
+                  ? now
+                  : _status == project?.actualEndResetStatus
+                      ? null
+                      : widget.initialTask?.actualEndDate,
             );
             if (context.mounted) {
               Navigator.of(context).pop();
@@ -662,15 +680,24 @@ class _TaskEditorDialogState extends State<_TaskEditorDialog> {
   }
 
   Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final selected = await showDatePicker(
+    final date = await showDatePicker(
       context: context,
-      firstDate: DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 5),
-      initialDate: _dueDate ?? now,
+      initialDate: _dueDate ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
     );
-    if (selected != null) {
-      setState(() => _dueDate = selected);
-    }
+    if (date == null) return;
+    if (!context.mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: _dueDate != null
+          ? TimeOfDay.fromDateTime(_dueDate!)
+          : const TimeOfDay(hour: 9, minute: 0),
+    );
+    if (time == null) return;
+    setState(() {
+      _dueDate =
+          DateTime(date.year, date.month, date.day, time.hour, time.minute);
+    });
   }
 }

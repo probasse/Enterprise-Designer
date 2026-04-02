@@ -3,9 +3,14 @@ import 'package:intl/intl.dart';
 
 import '../../core/app_controller.dart';
 import '../../core/models/assignee_model.dart';
+import '../../core/models/project_grant.dart';
 import '../../core/models/project_model.dart';
 import '../../core/models/task_model.dart';
+import '../../shared/utils/comment_utils.dart';
+import '../../shared/utils/table_column_prefs.dart';
+import '../../shared/widgets/custom_data_table.dart';
 import '../../shared/widgets/gantt_chart_view.dart';
+import '../../shared/widgets/markdown_text.dart';
 import '../../shared/widgets/section_card.dart';
 
 class ProjectsScreen extends StatelessWidget {
@@ -45,7 +50,14 @@ class ProjectsScreen extends StatelessWidget {
       }
     }
 
-    return SingleChildScrollView(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final screenWidth = constraints.maxWidth;
+        final colCount = screenWidth >= 760 ? 2 : 1;
+        final projectCardWidth =
+            (screenWidth - (colCount - 1) * 18) / colCount;
+
+        return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -91,7 +103,7 @@ class ProjectsScreen extends StatelessWidget {
                   children: controller.projects
                       .map(
                         (project) => SizedBox(
-                          width: 360,
+                          width: projectCardWidth,
                           child: _ProjectTile(
                             project: project,
                             taskCount: controller.tasks
@@ -116,6 +128,8 @@ class ProjectsScreen extends StatelessWidget {
                 ),
         ],
       ),
+        );
+      },
     );
   }
 
@@ -135,6 +149,7 @@ class ProjectsScreen extends StatelessWidget {
           canManageStatuses: project == null
               ? controller.canCreateProjects
               : controller.canEditProject(project.id),
+          isSuperAdmin: controller.isSuperAdmin,
           onSave:
               ({
                 required title,
@@ -146,8 +161,19 @@ class ProjectsScreen extends StatelessWidget {
                 required phases,
                 required taskStatuses,
                 required assignedAssigneeIds,
-              }) {
-                return controller.saveProject(
+                required isConfidential,
+                required grantsByAssigneeId,
+                required actualStartStatus,
+                required actualEndStatus,
+                required actualStartResetStatus,
+                required actualEndResetStatus,
+                required allowSampleData,
+                required workingDays,
+                required workDayStartHour,
+                required workDayEndHour,
+                required publicHolidays,
+              }) async {
+                await controller.saveProject(
                   title: title,
                   description: description,
                   colorValue: colorValue,
@@ -157,8 +183,24 @@ class ProjectsScreen extends StatelessWidget {
                   phases: phases,
                   taskStatuses: taskStatuses,
                   assignedAssigneeIds: assignedAssigneeIds,
+                  isConfidential: isConfidential,
+                  actualStartStatus: actualStartStatus,
+                  actualEndStatus: actualEndStatus,
+                  actualStartResetStatus: actualStartResetStatus,
+                  actualEndResetStatus: actualEndResetStatus,
+                  allowSampleData: allowSampleData,
+                  workingDays: workingDays,
+                  workDayStartHour: workDayStartHour,
+                  workDayEndHour: workDayEndHour,
+                  publicHolidays: publicHolidays,
                   projectId: project?.id,
                 );
+                if (project?.id != null) {
+                  await controller.saveProjectGrants(
+                    projectId: project!.id,
+                    grantsByAssigneeId: grantsByAssigneeId,
+                  );
+                }
               },
         );
       },
@@ -204,15 +246,31 @@ class _ProjectTile extends StatelessWidget {
               child: Icon(Icons.folder_copy_rounded, color: accent),
             ),
             const SizedBox(height: 18),
-            InkWell(
-              onTap: onOpenWorkspace,
-              child: Text(
-                project.title,
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                  color: accent,
-                  decoration: TextDecoration.underline,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: InkWell(
+                    onTap: onOpenWorkspace,
+                    child: Text(
+                      project.title,
+                      style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: accent,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                  ),
                 ),
-              ),
+                if (project.isConfidential) ...[
+                  const SizedBox(width: 8),
+                  Tooltip(
+                    message: 'Confidential',
+                    child: Icon(Icons.lock_rounded,
+                        size: 18,
+                        color: Theme.of(context).colorScheme.error),
+                  ),
+                ],
+              ],
             ),
             const SizedBox(height: 6),
             Text('Project ID: ${project.projectCode}'),
@@ -338,9 +396,35 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '${project.projectCode} Workspace',
-                      style: Theme.of(context).textTheme.headlineLarge,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${project.projectCode} Workspace',
+                            style: Theme.of(context).textTheme.headlineLarge,
+                          ),
+                        ),
+                        if (project.isConfidential) ...[
+                          const SizedBox(width: 8),
+                          Chip(
+                            avatar: Icon(
+                              Icons.lock_rounded,
+                              size: 16,
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                            label: Text(
+                              'Confidential',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                            backgroundColor: Theme.of(context)
+                                .colorScheme
+                                .errorContainer
+                                .withValues(alpha: 0.3),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 6),
                     Text(
@@ -350,12 +434,21 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
                   ],
                 ),
               ),
-              if (canEdit && _activeTab == _ProjectWorkspaceTab.overview)
-                OutlinedButton.icon(
-                  onPressed: widget.onEditProject,
-                  icon: const Icon(Icons.edit),
-                  label: const Text('Edit project'),
-                ),
+              if (canEdit) ...[
+                if (_activeTab == _ProjectWorkspaceTab.overview)
+                  OutlinedButton.icon(
+                    onPressed: widget.onEditProject,
+                    icon: const Icon(Icons.edit),
+                    label: const Text('Edit project'),
+                  ),
+                const SizedBox(width: 8),
+                if (project.allowSampleData)
+                  OutlinedButton.icon(
+                    onPressed: () => controller.generateSampleData(project.id),
+                    icon: const Icon(Icons.auto_awesome_outlined),
+                    label: const Text('Generate sample data'),
+                  ),
+              ],
             ],
           ),
           const SizedBox(height: 20),
@@ -394,7 +487,8 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
               type: ProjectRecordType.issue,
               entries: project.issueLog,
               assignees: projectAssignees,
-              canEdit: canEdit,
+              canEdit: controller.canManageProjectRecords(
+                  project.id, ProjectRecordType.issue),
             ),
             _ProjectWorkspaceTab.risks => _ProjectRecordTab(
               controller: controller,
@@ -402,7 +496,8 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
               type: ProjectRecordType.risk,
               entries: project.riskLog,
               assignees: projectAssignees,
-              canEdit: canEdit,
+              canEdit: controller.canManageProjectRecords(
+                  project.id, ProjectRecordType.risk),
             ),
             _ProjectWorkspaceTab.actions => _ProjectRecordTab(
               controller: controller,
@@ -410,7 +505,8 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
               type: ProjectRecordType.action,
               entries: project.actionLog,
               assignees: projectAssignees,
-              canEdit: canEdit,
+              canEdit: controller.canManageProjectRecords(
+                  project.id, ProjectRecordType.action),
             ),
             _ProjectWorkspaceTab.decisions => _ProjectRecordTab(
               controller: controller,
@@ -418,12 +514,42 @@ class _ProjectWorkspaceViewState extends State<_ProjectWorkspaceView> {
               type: ProjectRecordType.decision,
               entries: project.decisionLog,
               assignees: projectAssignees,
-              canEdit: canEdit,
+              canEdit: controller.canManageProjectRecords(
+                  project.id, ProjectRecordType.decision),
             ),
             _ProjectWorkspaceTab.kanban => _ProjectKanbanTab(
               controller: controller,
               project: project,
               tasks: projectTasks,
+              canEdit: canEdit,
+              onStatusChanged: (task, newStatus) {
+                final now = DateTime.now();
+                return controller.saveTask(
+                  taskId: task.id,
+                  projectId: task.projectId,
+                  title: task.title,
+                  notes: task.notes,
+                  status: newStatus,
+                  priority: task.priority,
+                  isMilestone: task.isMilestone,
+                  startDate: task.startDate,
+                  duration: task.duration,
+                  dueDate: task.dueDate,
+                  predecessorTaskCodes: task.predecessorTaskCodes,
+                  phaseId: task.phaseId,
+                  assigneeId: task.assigneeId,
+                  actualStartDate: newStatus == project.actualStartStatus
+                      ? now
+                      : newStatus == project.actualStartResetStatus
+                          ? null
+                          : task.actualStartDate,
+                  actualEndDate: newStatus == project.actualEndStatus
+                      ? now
+                      : newStatus == project.actualEndResetStatus
+                          ? null
+                          : task.actualEndDate,
+                );
+              },
             ),
             _ProjectWorkspaceTab.calendar => _ProjectCalendarTab(
               controller: controller,
@@ -452,6 +578,7 @@ class _ProjectOverviewTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final canEdit = controller.canManageProjectWork(project.id);
     final upcomingTasks = projectTasks
         .where((task) => task.dueDate != null)
         .take(6);
@@ -474,12 +601,18 @@ class _ProjectOverviewTab extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 20),
-        Wrap(
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final isWide = constraints.maxWidth >= 760;
+            final cardWidth = isWide
+                ? (constraints.maxWidth - 18) / 2
+                : constraints.maxWidth;
+            return Wrap(
           spacing: 18,
           runSpacing: 18,
           children: [
             SizedBox(
-              width: 460,
+              width: cardWidth,
               child: SectionCard(
                 title: 'Project Snapshot',
                 subtitle:
@@ -536,7 +669,7 @@ class _ProjectOverviewTab extends StatelessWidget {
               ),
             ),
             SizedBox(
-              width: 460,
+              width: cardWidth,
               child: SectionCard(
                 title: 'Upcoming Tasks',
                 subtitle: 'The next dated tasks inside this project.',
@@ -549,7 +682,33 @@ class _ProjectOverviewTab extends StatelessWidget {
                                 contentPadding: EdgeInsets.zero,
                                 title: Text('${task.taskCode} - ${task.title}'),
                                 subtitle: Text(task.status),
-                                trailing: Text(_formatDate(task.dueDate)),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Text(_formatDate(task.dueDate)),
+                                    const SizedBox(width: 4),
+                                    Icon(
+                                      canEdit
+                                          ? Icons.edit_outlined
+                                          : Icons.visibility_outlined,
+                                      size: 16,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .outline,
+                                    ),
+                                  ],
+                                ),
+                                onTap: () => showDialog<void>(
+                                  context: context,
+                                  builder: (_) => _ProjectTaskEditorDialog(
+                                    controller: controller,
+                                    project: project,
+                                    assignees: projectAssignees,
+                                    allTasks: projectTasks,
+                                    initialTask: task,
+                                    readOnly: !canEdit,
+                                  ),
+                                ),
                               ),
                             )
                             .toList(growable: false),
@@ -557,13 +716,13 @@ class _ProjectOverviewTab extends StatelessWidget {
               ),
             ),
           ],
+            );
+          },
         ),
       ],
     );
   }
 }
-
-enum _TaskSortOption { dueDateAsc, dueDateDesc, titleAsc, statusAsc }
 
 class _ProjectTasksTab extends StatefulWidget {
   const _ProjectTasksTab({
@@ -588,10 +747,6 @@ class _ProjectTasksTab extends StatefulWidget {
 
 class _ProjectTasksTabState extends State<_ProjectTasksTab> {
   final TextEditingController _searchController = TextEditingController();
-  String? _statusFilter;
-  String? _phaseFilter;
-  String? _assigneeFilter;
-  _TaskSortOption _sortOption = _TaskSortOption.dueDateAsc;
 
   @override
   void dispose() {
@@ -602,280 +757,1116 @@ class _ProjectTasksTabState extends State<_ProjectTasksTab> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
+    final searchQuery = _searchController.text.trim().toLowerCase();
     final filteredTasks = widget.tasks
         .where((task) {
-          final query = _searchController.text.trim().toLowerCase();
-          final matchesQuery =
-              query.isEmpty ||
-              task.taskCode.toLowerCase().contains(query) ||
-              task.title.toLowerCase().contains(query) ||
-              task.notes.toLowerCase().contains(query);
-          final matchesStatus =
-              _statusFilter == null || task.status == _statusFilter;
-          final matchesPhase =
-              _phaseFilter == null || task.phaseId == _phaseFilter;
-          final matchesAssignee =
-              _assigneeFilter == null || task.assigneeId == _assigneeFilter;
-          return matchesQuery &&
-              matchesStatus &&
-              matchesPhase &&
-              matchesAssignee;
+          if (searchQuery.isEmpty) return true;
+          return task.taskCode.toLowerCase().contains(searchQuery) ||
+              task.title.toLowerCase().contains(searchQuery) ||
+              task.notes.toLowerCase().contains(searchQuery);
         })
         .toList(growable: false);
-    filteredTasks.sort((left, right) {
-      switch (_sortOption) {
-        case _TaskSortOption.dueDateAsc:
-          return (left.dueDate ?? DateTime(2100)).compareTo(
-            right.dueDate ?? DateTime(2100),
-          );
-        case _TaskSortOption.dueDateDesc:
-          return (right.dueDate ?? DateTime(1900)).compareTo(
-            left.dueDate ?? DateTime(1900),
-          );
-        case _TaskSortOption.titleAsc:
-          return left.title.toLowerCase().compareTo(right.title.toLowerCase());
-        case _TaskSortOption.statusAsc:
-          return left.status.toLowerCase().compareTo(
-            right.status.toLowerCase(),
-          );
-      }
-    });
 
     return SectionCard(
       title: 'Project Tasks',
       subtitle:
-          'Filter, sort, and manage the tasks that belong only to this project.',
-      child: widget.tasks.isEmpty
-          ? const Text('No tasks in this project yet.')
-          : Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    SizedBox(
-                      width: 220,
-                      child: TextField(
-                        controller: _searchController,
-                        decoration: const InputDecoration(
-                          labelText: 'Search tasks',
-                        ),
-                        onChanged: (_) => setState(() {}),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 180,
-                      child: DropdownButtonFormField<String?>(
-                        initialValue: _statusFilter,
-                        decoration: const InputDecoration(labelText: 'Status'),
-                        items: [
-                          const DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('All statuses'),
-                          ),
-                          ...widget.project.taskStatuses.map(
-                            (status) => DropdownMenuItem<String?>(
-                              value: status,
-                              child: Text(status),
-                            ),
-                          ),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _statusFilter = value),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 180,
-                      child: DropdownButtonFormField<String?>(
-                        initialValue: _phaseFilter,
-                        decoration: const InputDecoration(labelText: 'Phase'),
-                        items: [
-                          const DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('All phases'),
-                          ),
-                          ...widget.project.phases.map(
-                            (phase) => DropdownMenuItem<String?>(
-                              value: phase.id,
-                              child: Text(phase.name),
-                            ),
-                          ),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _phaseFilter = value),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 220,
-                      child: DropdownButtonFormField<String?>(
-                        initialValue: _assigneeFilter,
-                        decoration: const InputDecoration(
-                          labelText: 'Assignee',
-                        ),
-                        items: [
-                          const DropdownMenuItem<String?>(
-                            value: null,
-                            child: Text('All assignees'),
-                          ),
-                          ...widget.assignees.map(
-                            (assignee) => DropdownMenuItem<String?>(
-                              value: assignee.id,
-                              child: Text(assignee.name),
-                            ),
-                          ),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _assigneeFilter = value),
-                      ),
-                    ),
-                    SizedBox(
-                      width: 220,
-                      child: DropdownButtonFormField<_TaskSortOption>(
-                        initialValue: _sortOption,
-                        decoration: const InputDecoration(labelText: 'Sort by'),
-                        items: const [
-                          DropdownMenuItem(
-                            value: _TaskSortOption.dueDateAsc,
-                            child: Text('Due date ascending'),
-                          ),
-                          DropdownMenuItem(
-                            value: _TaskSortOption.dueDateDesc,
-                            child: Text('Due date descending'),
-                          ),
-                          DropdownMenuItem(
-                            value: _TaskSortOption.titleAsc,
-                            child: Text('Title'),
-                          ),
-                          DropdownMenuItem(
-                            value: _TaskSortOption.statusAsc,
-                            child: Text('Status'),
-                          ),
-                        ],
-                        onChanged: (value) =>
-                            setState(() => _sortOption = value!),
-                      ),
-                    ),
-                  ],
+          'Manage the tasks that belong only to this project. Click column headers to sort or filter.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (widget.canEdit)
+                ElevatedButton.icon(
+                  onPressed: widget.onAddTask,
+                  icon: const Icon(Icons.add_task_rounded),
+                  label: const Text('Add task'),
                 ),
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 10,
-                  runSpacing: 10,
-                  children: [
-                    if (widget.canEdit)
-                      ElevatedButton.icon(
-                        onPressed: widget.onAddTask,
-                        icon: const Icon(Icons.add_task_rounded),
-                        label: const Text('Add task'),
-                      ),
-                    OutlinedButton.icon(
-                      onPressed: () => widget.controller.exportTasksToCsv(
-                        projectId: widget.project.id,
-                      ),
-                      icon: const Icon(Icons.download_rounded),
-                      label: const Text('Download CSV'),
-                    ),
-                    if (widget.canEdit)
-                      OutlinedButton.icon(
-                        onPressed: () => widget.controller.importTasksFromCsv(
-                          projectId: widget.project.id,
-                        ),
-                        icon: const Icon(Icons.upload_file_rounded),
-                        label: const Text('Upload CSV'),
-                      ),
-                  ],
+              OutlinedButton.icon(
+                onPressed: () => widget.controller.exportTasksToCsv(
+                  projectId: widget.project.id,
                 ),
-                const SizedBox(height: 16),
-                if (filteredTasks.isEmpty)
-                  const Text('No tasks match the current filters.')
-                else
-                  ...filteredTasks.map(
-                    (task) => Card(
-                      margin: const EdgeInsets.only(bottom: 12),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    '${task.taskCode} - ${task.title}',
-                                    style: Theme.of(
-                                      context,
-                                    ).textTheme.titleMedium,
-                                  ),
-                                ),
-                                Chip(label: Text(task.status)),
-                              ],
-                            ),
-                            const SizedBox(height: 8),
-                            Text(
-                              'Assignee: ${controller.assigneeName(task.assigneeId)}',
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Phase: ${controller.phaseName(widget.project.id, task.phaseId)}',
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Predecessors: ${controller.predecessorSummaries(task).join(', ').ifEmpty('None')}',
-                            ),
-                            const SizedBox(height: 4),
-                            Text('Due: ${_formatDate(task.dueDate)}'),
-                            const SizedBox(height: 4),
-                            Text(
-                              'Milestone: ${task.isMilestone ? 'Yes' : 'No'} • Last changed: ${DateFormat('MMM d, yyyy HH:mm').format(task.lastChangedAt)}',
-                            ),
-                            if (task.notes.isNotEmpty) ...[
-                              const SizedBox(height: 8),
-                              Text(task.notes),
-                            ],
-                            if (widget.canEdit) ...[
-                              const SizedBox(height: 12),
-                              Row(
-                                children: [
-                                  TextButton(
-                                    onPressed: () =>
-                                        _openTaskEditor(context, task: task),
-                                    child: const Text('Edit'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () =>
-                                        widget.controller.deleteTask(task.id),
-                                    child: const Text('Delete'),
-                                  ),
-                                ],
-                              ),
-                            ],
-                          ],
-                        ),
-                      ),
-                    ),
+                icon: const Icon(Icons.download_rounded),
+                label: const Text('Download CSV'),
+              ),
+              if (widget.canEdit)
+                OutlinedButton.icon(
+                  onPressed: () => widget.controller.importTasksFromCsv(
+                    projectId: widget.project.id,
                   ),
-              ],
+                  icon: const Icon(Icons.upload_file_rounded),
+                  label: const Text('Upload CSV'),
+                ),
+            ],
+          ),
+          if (widget.tasks.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 160, maxWidth: 260),
+              child: TextField(
+                controller: _searchController,
+                decoration: const InputDecoration(
+                  labelText: 'Search tasks',
+                  prefixIcon: Icon(Icons.search, size: 18),
+                  isDense: true,
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
             ),
-    );
-  }
-
-  Future<void> _openTaskEditor(BuildContext context, {TaskModel? task}) {
-    return showDialog<void>(
-      context: context,
-      builder: (context) => _ProjectTaskEditorDialog(
-        controller: widget.controller,
-        project: widget.project,
-        assignees: widget.assignees,
-        allTasks: widget.tasks,
-        initialTask: task,
+          ],
+          const SizedBox(height: 16),
+          if (widget.tasks.isEmpty)
+            const Text('No tasks in this project yet.')
+          else if (filteredTasks.isEmpty)
+            const Text('No tasks match the current search.')
+          else
+            _TaskTable(
+              tasks: filteredTasks,
+              controller: controller,
+              project: widget.project,
+              assignees: widget.assignees,
+              canEdit: widget.canEdit,
+              onDelete: (task) => widget.controller.deleteTask(task.id),
+            ),
+        ],
       ),
     );
   }
 }
 
-enum _RecordSortOption { newest, oldest, status, id }
+// ── Task table ─────────────────────────────────────────────────────────────
+
+class _TaskTable extends StatefulWidget {
+  const _TaskTable({
+    required this.tasks,
+    required this.controller,
+    required this.project,
+    required this.assignees,
+    required this.canEdit,
+    required this.onDelete,
+  });
+
+  final List<TaskModel> tasks;
+  final AppController controller;
+  final ProjectModel project;
+  final List<AssigneeModel> assignees;
+  final bool canEdit;
+  final void Function(TaskModel) onDelete;
+
+  @override
+  State<_TaskTable> createState() => _TaskTableState();
+}
+
+class _TaskTableState extends State<_TaskTable> {
+  // ── Column definitions ────────────────────────────────────────────────────
+  static const _taskColDefs = [
+    TableColDef(id: 'priority',     label: '',             width: 32,  sortable: false, canHide: false, canReorder: false),
+    TableColDef(id: 'id',           label: 'ID',           width: 80),
+    TableColDef(id: 'title',        label: 'Title',        width: 200, canHide: false),
+    TableColDef(id: 'status',       label: 'Status',       width: 130),
+    TableColDef(id: 'phase',        label: 'Phase',        width: 120),
+    TableColDef(id: 'assignee',     label: 'Assignee',     width: 130),
+    TableColDef(id: 'startDate',    label: 'Start Date',   width: 110),
+    TableColDef(id: 'duration',     label: 'Duration',     width: 90,  sortable: false),
+    TableColDef(id: 'endDate',      label: 'End Date',        width: 110, sortable: false),
+    TableColDef(id: 'dueDate',      label: 'Target Date',     width: 110),
+    TableColDef(id: 'milestone',    label: 'Milestone',       width: 90),
+    TableColDef(id: 'predecessors', label: 'Predecessors',    width: 160, sortable: false),
+    TableColDef(id: 'updatedAt',    label: 'Last Updated',    width: 140),
+    TableColDef(id: 'actualStartDate', label: 'Actual Start', width: 150),
+    TableColDef(id: 'actualEndDate',   label: 'Actual End',   width: 150),
+  ];
+
+  static List<String> get _defaultColOrder =>
+      _taskColDefs.map((c) => c.id).toList(growable: false);
+
+  // ── Sort / filter state ───────────────────────────────────────────────────
+  String? _sortColId;
+  bool _sortAscending = true;
+  String? _filterStatus;
+  String? _filterPhase;
+  String? _filterAssignee;
+
+  // ── Column pref state ─────────────────────────────────────────────────────
+  List<String> _colOrder = _defaultColOrder;
+  Set<String> _hiddenCols = {};
+  Map<String, double> _colWidths = {};
+  bool _prefsLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    final prefs = await TableColPrefs.load('tasks', _defaultColOrder);
+    if (mounted) {
+      setState(() {
+        _colOrder = prefs.order;
+        _hiddenCols = prefs.hidden;
+        _colWidths = prefs.widths;
+        _prefsLoaded = true;
+      });
+    }
+  }
+
+  Future<void> _savePrefs() async {
+    await TableColPrefs.save(
+        'tasks', TableColPrefs(order: _colOrder, hidden: _hiddenCols, widths: _colWidths));
+  }
+
+  void _onResized(String colId, double newWidth) {
+    setState(() => _colWidths = {..._colWidths, colId: newWidth});
+    _savePrefs();
+  }
+
+  void _onReorder(String fromId, String toId) {
+    final from = _colOrder.indexOf(fromId);
+    final to = _colOrder.indexOf(toId);
+    if (from == -1 || to == -1 || from == to) return;
+    setState(() {
+      _colOrder.removeAt(from);
+      _colOrder.insert(to, fromId);
+    });
+    _savePrefs();
+  }
+
+  void _onSort(String colId) {
+    setState(() {
+      if (_sortColId == colId) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColId = colId;
+        _sortAscending = true;
+      }
+    });
+  }
+
+  void _toggleHide(String colId) {
+    setState(() {
+      if (_hiddenCols.contains(colId)) {
+        _hiddenCols = {..._hiddenCols}..remove(colId);
+      } else {
+        _hiddenCols = {..._hiddenCols, colId};
+      }
+    });
+    _savePrefs();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  // ── Sort / filter helpers ─────────────────────────────────────────────────
+
+  List<TaskModel> _sorted(List<TaskModel> source) {
+    final id = _sortColId;
+    if (id == null) return source;
+    final result = List<TaskModel>.from(source);
+    result.sort((a, b) {
+      int cmp;
+      switch (id) {
+        case 'id':
+          cmp = a.taskCode.compareTo(b.taskCode);
+        case 'title':
+          cmp = a.title.toLowerCase().compareTo(b.title.toLowerCase());
+        case 'status':
+          cmp = a.status.toLowerCase().compareTo(b.status.toLowerCase());
+        case 'phase':
+          cmp = widget.controller
+              .phaseName(widget.project.id, a.phaseId)
+              .toLowerCase()
+              .compareTo(widget.controller
+                  .phaseName(widget.project.id, b.phaseId)
+                  .toLowerCase());
+        case 'assignee':
+          cmp = widget.controller
+              .assigneeName(a.assigneeId)
+              .toLowerCase()
+              .compareTo(widget.controller
+                  .assigneeName(b.assigneeId)
+                  .toLowerCase());
+        case 'startDate':
+          cmp = (a.startDate ?? DateTime(2100))
+              .compareTo(b.startDate ?? DateTime(2100));
+        case 'dueDate':
+          cmp = (a.dueDate ?? DateTime(2100))
+              .compareTo(b.dueDate ?? DateTime(2100));
+        case 'actualStartDate':
+          cmp = (a.actualStartDate ?? DateTime(2100))
+              .compareTo(b.actualStartDate ?? DateTime(2100));
+        case 'actualEndDate':
+          cmp = (a.actualEndDate ?? DateTime(2100))
+              .compareTo(b.actualEndDate ?? DateTime(2100));
+        case 'milestone':
+          cmp = (a.isMilestone ? 1 : 0).compareTo(b.isMilestone ? 1 : 0);
+        case 'updatedAt':
+          cmp = a.updatedAt.compareTo(b.updatedAt);
+        default:
+          cmp = 0;
+      }
+      return _sortAscending ? cmp : -cmp;
+    });
+    return result;
+  }
+
+  List<TaskModel> _filtered(List<TaskModel> source) {
+    return source.where((t) {
+      if (_filterStatus != null && t.status != _filterStatus) return false;
+      if (_filterPhase != null && t.phaseId != _filterPhase) return false;
+      if (_filterAssignee != null && t.assigneeId != _filterAssignee) {
+        return false;
+      }
+      return true;
+    }).toList(growable: false);
+  }
+
+  // ── Visible columns ───────────────────────────────────────────────────────
+
+  static const _actionsColDef = TableColDef(
+    id: 'actions', label: '', width: 56,
+    sortable: false, canHide: false, canReorder: false,
+  );
+
+  List<TableColDef> _visibleCols() {
+    final byId = {for (final c in _taskColDefs) c.id: c};
+    final cols = _colOrder
+        .where((id) => !_hiddenCols.contains(id))
+        .map((id) {
+          final col = byId[id];
+          if (col == null) return null;
+          final w = _colWidths[id];
+          return w != null ? col.withWidth(w) : col;
+        })
+        .whereType<TableColDef>()
+        .toList();
+    if (widget.canEdit) cols.add(_actionsColDef);
+    return cols;
+  }
+
+  // ── Cell builders ─────────────────────────────────────────────────────────
+
+  Widget _cellFor(String colId, TaskModel task, BuildContext context) {
+    final theme = Theme.of(context);
+    switch (colId) {
+      case 'priority':
+        return Tooltip(
+          message: task.priority.name.toUpperCase(),
+          child: Container(
+            width: 12, height: 12,
+            decoration: BoxDecoration(
+              color: _priorityColor(task.priority),
+              shape: BoxShape.circle,
+            ),
+          ),
+        );
+      case 'id':
+        return Text(task.taskCode,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(fontWeight: FontWeight.w600));
+      case 'title':
+        return SizedBox(
+          width: 176,
+          child: Tooltip(
+            message: task.notes.isEmpty ? task.title : task.notes,
+            child: Row(children: [
+              if (task.isMilestone)
+                const Padding(
+                  padding: EdgeInsets.only(right: 6),
+                  child: Icon(Icons.flag_rounded,
+                      size: 14, color: Color(0xFFD96C45)),
+                ),
+              Expanded(
+                child: Text(task.title,
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+              ),
+            ]),
+          ),
+        );
+      case 'status':
+        return _statusCell(context, task);
+      case 'phase':
+        return _phaseCell(context, task);
+      case 'assignee':
+        return _assigneeCell(context, task);
+      case 'startDate':
+        return _startDateCell(context, task);
+      case 'duration':
+        return _durationCell(context, task);
+      case 'endDate':
+        return Text(
+          _formatDateTime(task.endDate),
+          style: theme.textTheme.bodySmall,
+        );
+      case 'dueDate':
+        return _dueDateCell(context, task);
+      case 'milestone':
+        if (!widget.canEdit) {
+          return task.isMilestone
+              ? Icon(Icons.check_rounded,
+                  size: 18, color: theme.colorScheme.primary)
+              : const SizedBox.shrink();
+        }
+        return Tooltip(
+          message: task.isMilestone ? 'Milestone — tap to unset' : 'Tap to mark as milestone',
+          child: InkWell(
+            borderRadius: BorderRadius.circular(6),
+            onTap: () => _saveField(task, isMilestone: !task.isMilestone),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+              child: Icon(
+                task.isMilestone ? Icons.flag_rounded : Icons.flag_outlined,
+                size: 18,
+                color: task.isMilestone
+                    ? const Color(0xFFD96C45)
+                    : theme.colorScheme.onSurface.withValues(alpha: 0.35),
+              ),
+            ),
+          ),
+        );
+      case 'predecessors':
+        return _predecessorsCell(context, task);
+      case 'updatedAt':
+        return Text(
+          DateFormat('MMM d, yyyy HH:mm').format(task.updatedAt),
+          style: theme.textTheme.bodySmall,
+        );
+      case 'actualStartDate':
+        return Text(
+          task.actualStartDate == null
+              ? '—'
+              : DateFormat('MMM d, yyyy HH:mm').format(task.actualStartDate!),
+          style: theme.textTheme.bodySmall,
+        );
+      case 'actualEndDate':
+        return Text(
+          task.actualEndDate == null
+              ? '—'
+              : DateFormat('MMM d, yyyy HH:mm').format(task.actualEndDate!),
+          style: theme.textTheme.bodySmall,
+        );
+      case 'actions':
+        return IconButton(
+          tooltip: 'Delete task',
+          icon: Icon(Icons.delete_outline_rounded,
+              size: 18, color: theme.colorScheme.error),
+          onPressed: () => widget.onDelete(task),
+          visualDensity: VisualDensity.compact,
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_prefsLoaded) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final displayTasks = _sorted(_filtered(widget.tasks));
+    final visibleCols = _visibleCols();
+    final hideable = _taskColDefs.where((c) => c.canHide).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Toolbar: filters + column visibility ────────────────────────────
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              // Status filter
+              _filterChip(context, 'Status',
+                  _filterStatus ?? 'All statuses', Icons.tune_rounded, () async {
+                final v = await _showStringPicker(
+                    context,
+                    'Filter by Status',
+                    [null, ...widget.project.taskStatuses],
+                    _filterStatus);
+                if (v != null || mounted) {
+                  setState(() => _filterStatus = v == '' ? null : v);
+                }
+              }),
+              // Phase filter
+              _filterChip(context, 'Phase',
+                  _filterPhase == null
+                      ? 'All phases'
+                      : widget.controller
+                          .phaseName(widget.project.id, _filterPhase),
+                  Icons.tune_rounded, () async {
+                final phases = [null, ...widget.project.phases.map((p) => p.id)];
+                final v = await _showStringPicker(
+                    context,
+                    'Filter by Phase',
+                    phases,
+                    _filterPhase,
+                    labelFor: (id) => id == null
+                        ? 'All phases'
+                        : widget.controller
+                            .phaseName(widget.project.id, id));
+                if (v != null || mounted) {
+                  setState(() => _filterPhase = v == '' ? null : v);
+                }
+              }),
+              // Assignee filter
+              _filterChip(context, 'Assignee',
+                  _filterAssignee == null
+                      ? 'All assignees'
+                      : widget.controller.assigneeName(_filterAssignee),
+                  Icons.tune_rounded, () async {
+                final ids = [null, ...widget.assignees.map((a) => a.id)];
+                final v = await _showStringPicker(
+                    context,
+                    'Filter by Assignee',
+                    ids,
+                    _filterAssignee,
+                    labelFor: (id) => id == null
+                        ? 'All assignees'
+                        : widget.controller.assigneeName(id));
+                if (v != null || mounted) {
+                  setState(() => _filterAssignee = v == '' ? null : v);
+                }
+              }),
+              // Column visibility button
+              _colVisButton(context, hideable, theme),
+              // Auto column width button
+              IconButton(
+                tooltip: 'Reset column widths',
+                icon: const Icon(Icons.fit_screen_rounded, size: 20),
+                onPressed: () {
+                  setState(() => _colWidths = {});
+                  _savePrefs();
+                },
+              ),
+            ],
+          ),
+        ),
+        // ── Table ───────────────────────────────────────────────────────────
+        CustomDataTable(
+          columns: visibleCols,
+          sortColId: _sortColId,
+          sortAscending: _sortAscending,
+          onSort: _onSort,
+          onReorder: _onReorder,
+          onResized: _onResized,
+          pinnedLeadingCount: 0,
+          pinnedTrailingCount: widget.canEdit ? 1 : 0,
+          rows: [
+            for (final task in displayTasks)
+              [for (final col in visibleCols) _cellFor(col.id, task, context)],
+          ],
+          rowColor: (i) {
+            final task = displayTasks[i];
+            return task.isOverdue
+                ? theme.colorScheme.errorContainer.withValues(alpha: 0.25)
+                : null;
+          },
+        ),
+      ],
+    );
+  }
+
+  // ── Filter chip helper ────────────────────────────────────────────────────
+
+  Widget _filterChip(BuildContext context, String label, String value,
+      IconData icon, VoidCallback onTap) {
+    final active = !value.startsWith('All');
+    return ActionChip(
+      avatar: Icon(icon, size: 14),
+      label: Text(value, overflow: TextOverflow.ellipsis),
+      backgroundColor: active
+          ? Theme.of(context).colorScheme.primaryContainer
+          : null,
+      onPressed: onTap,
+    );
+  }
+
+  // ── Column visibility button ──────────────────────────────────────────────
+
+  Widget _colVisButton(BuildContext context, List<TableColDef> hideable,
+      ThemeData theme) {
+    return PopupMenuButton<String>(
+      tooltip: 'Show/hide columns',
+      icon: const Icon(Icons.view_column_outlined),
+      itemBuilder: (_) => hideable
+          .map(
+            (col) => CheckedPopupMenuItem<String>(
+              value: col.id,
+              checked: !_hiddenCols.contains(col.id),
+              child: Text(col.label),
+            ),
+          )
+          .toList(growable: false),
+      onSelected: _toggleHide,
+    );
+  }
+
+  // ── String picker dialog ──────────────────────────────────────────────────
+
+  Future<String?> _showStringPicker(
+    BuildContext context,
+    String title,
+    List<String?> options,
+    String? current, {
+    String Function(String?)? labelFor,
+  }) {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(title),
+        children: options
+            .map((v) => SimpleDialogOption(
+                  onPressed: () => Navigator.of(ctx).pop(v ?? ''),
+                  child: Text(labelFor?.call(v) ??
+                      (v == null ? 'All' : v)),
+                ))
+            .toList(),
+      ),
+    );
+  }
+
+  // ── Actual date auto-timestamp helper ────────────────────────────────────
+
+  ({DateTime? actualStart, DateTime? actualEnd, bool clearActualStart, bool clearActualEnd}) _resolveActualDates({
+    required TaskModel existing,
+    required String newStatus,
+  }) {
+    final project = widget.project;
+    final now = DateTime.now();
+    final DateTime? resolvedStart;
+    final bool clearStart;
+    if (newStatus == project.actualStartStatus) {
+      resolvedStart = now;
+      clearStart = false;
+    } else if (newStatus == project.actualStartResetStatus) {
+      resolvedStart = null;
+      clearStart = true;
+    } else {
+      resolvedStart = existing.actualStartDate;
+      clearStart = false;
+    }
+    final DateTime? resolvedEnd;
+    final bool clearEnd;
+    if (newStatus == project.actualEndStatus) {
+      resolvedEnd = now;
+      clearEnd = false;
+    } else if (newStatus == project.actualEndResetStatus) {
+      resolvedEnd = null;
+      clearEnd = true;
+    } else {
+      resolvedEnd = existing.actualEndDate;
+      clearEnd = false;
+    }
+    return (
+      actualStart: resolvedStart,
+      actualEnd: resolvedEnd,
+      clearActualStart: clearStart,
+      clearActualEnd: clearEnd,
+    );
+  }
+
+  // ── Field save helper ─────────────────────────────────────────────────────
+
+  Future<void> _saveField(
+    TaskModel task, {
+    String? status,
+    String? phaseId,
+    bool clearPhaseId = false,
+    String? assigneeId,
+    bool clearAssigneeId = false,
+    DateTime? dueDate,
+    bool clearDueDate = false,
+    DateTime? startDate,
+    bool clearStartDate = false,
+    String? duration,
+    List<String>? predecessorTaskCodes,
+    bool? isMilestone,
+  }) async {
+    final newStatus = status ?? task.status;
+    final (:actualStart, :actualEnd, :clearActualStart, :clearActualEnd) =
+        _resolveActualDates(existing: task, newStatus: newStatus);
+    await widget.controller.saveTask(
+      taskId: task.id,
+      projectId: task.projectId,
+      title: task.title,
+      notes: task.notes,
+      status: newStatus,
+      priority: task.priority,
+      isMilestone: isMilestone ?? task.isMilestone,
+      startDate: clearStartDate ? null : startDate ?? task.startDate,
+      duration: duration ?? task.duration,
+      dueDate: clearDueDate ? null : dueDate ?? task.dueDate,
+      predecessorTaskCodes: predecessorTaskCodes ?? task.predecessorTaskCodes,
+      phaseId: clearPhaseId ? null : phaseId ?? task.phaseId,
+      assigneeId: clearAssigneeId ? null : assigneeId ?? task.assigneeId,
+      actualStartDate: clearActualStart ? null : actualStart,
+      actualEndDate: clearActualEnd ? null : actualEnd,
+    );
+  }
+
+  // ── Inline edit cell helpers ──────────────────────────────────────────────
+
+  Widget _statusCell(BuildContext context, TaskModel task) {
+    if (!widget.canEdit) {
+      return Chip(
+        label: Text(task.status, style: Theme.of(context).textTheme.labelSmall),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+      );
+    }
+    return DropdownButton<String>(
+      value: widget.project.taskStatuses.contains(task.status)
+          ? task.status
+          : widget.project.taskStatuses.first,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: widget.project.taskStatuses
+          .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+          .toList(),
+      onChanged: (value) {
+        if (value != null && value != task.status) _saveField(task, status: value);
+      },
+    );
+  }
+
+  Widget _phaseCell(BuildContext context, TaskModel task) {
+    final phaseName =
+        widget.controller.phaseName(widget.project.id, task.phaseId);
+    if (!widget.canEdit) {
+      return Text(phaseName, style: Theme.of(context).textTheme.bodySmall);
+    }
+    return DropdownButton<String?>(
+      value: task.phaseId,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: [
+        const DropdownMenuItem<String?>(value: null, child: Text('—')),
+        ...widget.project.phases.map((p) =>
+            DropdownMenuItem<String?>(value: p.id, child: Text(p.name))),
+      ],
+      onChanged: (value) {
+        if (value != task.phaseId) {
+          _saveField(task, phaseId: value, clearPhaseId: value == null);
+        }
+      },
+    );
+  }
+
+  Widget _assigneeCell(BuildContext context, TaskModel task) {
+    final theme = Theme.of(context);
+    final name = widget.controller.assigneeName(task.assigneeId);
+    // Check OOO for this task's assignee
+    final assignee = task.assigneeId == null
+        ? null
+        : widget.assignees.cast<AssigneeModel?>().firstWhere(
+            (a) => a?.id == task.assigneeId,
+            orElse: () => null,
+          );
+    final isOoo = assignee != null && _isAssigneeOoo(task, assignee);
+    if (!widget.canEdit) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(name, style: theme.textTheme.bodySmall),
+          if (isOoo) ...[
+            const SizedBox(width: 6),
+            Chip(
+              label: const Text('OOO'),
+              backgroundColor:
+                  theme.colorScheme.errorContainer.withValues(alpha: 0.6),
+              labelStyle: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onErrorContainer,
+              ),
+              padding: EdgeInsets.zero,
+              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              visualDensity: VisualDensity.compact,
+            ),
+          ],
+        ],
+      );
+    }
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Expanded(
+          child: DropdownButton<String?>(
+            value: task.assigneeId,
+            isDense: true,
+            isExpanded: true,
+            underline: const SizedBox.shrink(),
+            items: [
+              const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+              ...widget.assignees.map((a) =>
+                  DropdownMenuItem<String?>(value: a.id, child: Text(a.name))),
+            ],
+            onChanged: (value) {
+              if (value != task.assigneeId) {
+                _saveField(task, assigneeId: value, clearAssigneeId: value == null);
+              }
+            },
+          ),
+        ),
+        if (isOoo) ...[
+          const SizedBox(width: 6),
+          Chip(
+            label: const Text('OOO'),
+            backgroundColor:
+                theme.colorScheme.errorContainer.withValues(alpha: 0.6),
+            labelStyle: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onErrorContainer,
+            ),
+            padding: EdgeInsets.zero,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ],
+    );
+  }
+
+  bool _isAssigneeOoo(TaskModel task, AssigneeModel assignee) {
+    if (assignee.oooRanges.isEmpty) return false;
+    final start = task.startDate;
+    if (start == null) return false;
+    final end = computeTaskEndDate(task, widget.project) ??
+        task.dueDate ??
+        start.add(const Duration(days: 1));
+    return assignee.oooRanges
+        .any((r) => r.start.isBefore(end) && r.end.isAfter(start));
+  }
+
+  Widget _dueDateCell(BuildContext context, TaskModel task) {
+    final theme = Theme.of(context);
+    final isOverdue = task.isOverdue;
+    final label = _formatDateTime(task.dueDate);
+    if (!widget.canEdit) {
+      return Text(
+        label,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: isOverdue ? theme.colorScheme.error : null,
+          fontWeight: isOverdue ? FontWeight.w600 : null,
+        ),
+      );
+    }
+    return InkWell(
+      onTap: () async {
+        final picked = await _pickDateTime(context, task.dueDate);
+        if (picked != null) await _saveField(task, dueDate: picked);
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: isOverdue ? theme.colorScheme.error : null,
+              fontWeight: isOverdue ? FontWeight.w600 : null,
+              decoration: TextDecoration.underline,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.edit_calendar_outlined,
+              size: 14, color: theme.colorScheme.outline),
+        ],
+      ),
+    );
+  }
+
+  Widget _startDateCell(BuildContext context, TaskModel task) {
+    final theme = Theme.of(context);
+    final label = _formatDateTime(task.startDate);
+    final hasPredecessors = task.predecessorTaskCodes.isNotEmpty;
+    // Read-only when not canEdit OR when predecessors control the start date
+    if (!widget.canEdit || hasPredecessors) {
+      return Text(label, style: theme.textTheme.bodySmall);
+    }
+    return InkWell(
+      onTap: () async {
+        final picked = await _pickDateTime(context, task.startDate);
+        if (picked != null) {
+          await _saveField(task, startDate: picked, clearStartDate: false);
+        }
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(decoration: TextDecoration.underline),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.edit_calendar_outlined,
+              size: 14, color: theme.colorScheme.outline),
+        ],
+      ),
+    );
+  }
+
+  Widget _durationCell(BuildContext context, TaskModel task) {
+    final theme = Theme.of(context);
+    final label = task.duration.isEmpty ? '—' : task.duration;
+    if (!widget.canEdit) {
+      return Text(label, style: theme.textTheme.bodySmall);
+    }
+    return InkWell(
+      onTap: () async {
+        final controller =
+            TextEditingController(text: task.duration);
+        final result = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Set Duration'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    hintText: 'e.g. 2d, 1w, 3mo, 8 (hours)',
+                    helperText:
+                        'Units: plain number = hours · d = days · w = weeks · mo = months',
+                  ),
+                  onSubmitted: (_) =>
+                      Navigator.of(ctx).pop(controller.text.trim()),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(null),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () =>
+                    Navigator.of(ctx).pop(controller.text.trim()),
+                child: const Text('Save'),
+              ),
+            ],
+          ),
+        );
+        if (result != null) {
+          await _saveField(task, duration: result);
+        }
+      },
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.bodySmall
+                ?.copyWith(decoration: TextDecoration.underline),
+          ),
+          const SizedBox(width: 4),
+          Icon(Icons.edit_outlined,
+              size: 14, color: theme.colorScheme.outline),
+        ],
+      ),
+    );
+  }
+
+  Widget _predecessorsCell(BuildContext context, TaskModel task) {
+    final theme = Theme.of(context);
+    final summaries = widget.controller.predecessorSummaries(task);
+    final label = summaries.join(', ').ifEmpty('—');
+    if (!widget.canEdit) {
+      return SizedBox(
+        width: 136,
+        child: Text(label,
+            style: theme.textTheme.bodySmall,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis),
+      );
+    }
+    final allProjectTasks = widget.controller.tasks
+        .where((t) => t.projectId == widget.project.id && t.id != task.id)
+        .toList(growable: false);
+    return InkWell(
+      onTap: () async {
+        final selected = await showDialog<Set<String>>(
+          context: context,
+          builder: (ctx) => _PredecessorPickerDialog(
+            allTasks: allProjectTasks,
+            currentCodes: task.predecessorTaskCodes.toSet(),
+          ),
+        );
+        if (selected != null) {
+          // Auto-compute start date = max(endDate ?? dueDate) of selected predecessors
+          DateTime? latestEnd;
+          for (final code in selected) {
+            final pred = allProjectTasks.cast<TaskModel?>()
+                .firstWhere((t) => t?.taskCode == code, orElse: () => null);
+            final predEnd = (pred == null)
+                ? null
+                : computeTaskEndDate(pred, widget.project) ?? pred.dueDate;
+            if (predEnd != null &&
+                (latestEnd == null || predEnd.isAfter(latestEnd))) {
+              latestEnd = predEnd;
+            }
+          }
+          await _saveField(task,
+              predecessorTaskCodes: selected.toList(growable: false),
+              startDate: selected.isEmpty ? null : latestEnd,
+              clearStartDate: selected.isEmpty);
+        }
+      },
+      child: SizedBox(
+        width: 136,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(decoration: TextDecoration.underline),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
+            ),
+            Icon(Icons.edit_outlined, size: 14, color: theme.colorScheme.outline),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Predecessor picker dialog ───────────────────────────────────────────────
+
+class _PredecessorPickerDialog extends StatefulWidget {
+  const _PredecessorPickerDialog({
+    required this.allTasks,
+    required this.currentCodes,
+  });
+
+  final List<TaskModel> allTasks;
+  final Set<String> currentCodes;
+
+  @override
+  State<_PredecessorPickerDialog> createState() =>
+      _PredecessorPickerDialogState();
+}
+
+class _PredecessorPickerDialogState extends State<_PredecessorPickerDialog> {
+  late Set<String> _selected;
+  final _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = Set<String>.from(widget.currentCodes);
+    _searchController.addListener(
+        () => setState(() => _searchQuery = _searchController.text.trim().toLowerCase()));
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final sorted = [...widget.allTasks]
+      ..sort((a, b) => a.taskCode.compareTo(b.taskCode));
+    final filtered = _searchQuery.isEmpty
+        ? sorted
+        : sorted.where((t) =>
+            t.taskCode.toLowerCase().contains(_searchQuery) ||
+            t.title.toLowerCase().contains(_searchQuery)).toList(growable: false);
+
+    return AlertDialog(
+      title: const Text('Select predecessors'),
+      content: SizedBox(
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 520.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: _searchController,
+              decoration: InputDecoration(
+                hintText: 'Search by ID or title…',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _searchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 16),
+                        onPressed: () => _searchController.clear(),
+                      )
+                    : null,
+                isDense: true,
+              ),
+              autofocus: false,
+            ),
+            const SizedBox(height: 10),
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(context).size.height * 0.4,
+              ),
+              child: filtered.isEmpty
+                  ? const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 16),
+                      child: Text('No matching tasks.'),
+                    )
+                  : SingleChildScrollView(
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: filtered
+                            .map((task) => FilterChip(
+                                  label: Text('${task.taskCode} – ${task.title}'),
+                                  selected: _selected.contains(task.taskCode),
+                                  onSelected: (on) => setState(() {
+                                    if (on) {
+                                      _selected.add(task.taskCode);
+                                    } else {
+                                      _selected.remove(task.taskCode);
+                                    }
+                                  }),
+                                ))
+                            .toList(growable: false),
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => Navigator.of(context).pop(_selected),
+          child: const Text('Apply'),
+        ),
+      ],
+    );
+  }
+}
+
+Color _priorityColor(TaskPriority priority) {
+  switch (priority) {
+    case TaskPriority.low:
+      return const Color(0xFF4A7C59);
+    case TaskPriority.medium:
+      return const Color(0xFFDAA520);
+    case TaskPriority.high:
+      return const Color(0xFFD96C45);
+  }
+}
+
+
 
 class _ProjectRecordTab extends StatefulWidget {
   const _ProjectRecordTab({
@@ -900,9 +1891,6 @@ class _ProjectRecordTab extends StatefulWidget {
 
 class _ProjectRecordTabState extends State<_ProjectRecordTab> {
   final TextEditingController _searchController = TextEditingController();
-  String? _statusFilter;
-  String? _assigneeFilter;
-  _RecordSortOption _sortOption = _RecordSortOption.newest;
 
   @override
   void dispose() {
@@ -913,40 +1901,20 @@ class _ProjectRecordTabState extends State<_ProjectRecordTab> {
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
-    final entries = widget.entries
+    final searchQuery = _searchController.text.trim().toLowerCase();
+    final filteredEntries = widget.entries
         .where((entry) {
-          final query = _searchController.text.trim().toLowerCase();
-          final matchesQuery =
-              query.isEmpty ||
-              entry.id.toLowerCase().contains(query) ||
-              entry.description.toLowerCase().contains(query) ||
-              entry.comments.toLowerCase().contains(query);
-          final matchesStatus =
-              _statusFilter == null || entry.status == _statusFilter;
-          final matchesAssignee =
-              _assigneeFilter == null || entry.assigneeId == _assigneeFilter;
-          return matchesQuery && matchesStatus && matchesAssignee;
+          if (searchQuery.isEmpty) return true;
+          return entry.id.toLowerCase().contains(searchQuery) ||
+              entry.description.toLowerCase().contains(searchQuery) ||
+              entry.comments.toLowerCase().contains(searchQuery);
         })
         .toList(growable: false);
-    entries.sort((left, right) {
-      switch (_sortOption) {
-        case _RecordSortOption.newest:
-          return right.createdAt.compareTo(left.createdAt);
-        case _RecordSortOption.oldest:
-          return left.createdAt.compareTo(right.createdAt);
-        case _RecordSortOption.status:
-          return left.status.toLowerCase().compareTo(
-            right.status.toLowerCase(),
-          );
-        case _RecordSortOption.id:
-          return left.id.toLowerCase().compareTo(right.id.toLowerCase());
-      }
-    });
 
     return SectionCard(
       title: '${_recordLabel(widget.type)} Log',
       subtitle:
-          'Filter, sort, download, and upload ${_recordLabel(widget.type).toLowerCase()} entries for this project.',
+          'Manage ${_recordLabel(widget.type).toLowerCase()} entries. Click column headers to sort or filter.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -955,84 +1923,18 @@ class _ProjectRecordTabState extends State<_ProjectRecordTab> {
             runSpacing: 12,
             crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              SizedBox(
-                width: 220,
+              ConstrainedBox(
+                constraints:
+                    const BoxConstraints(minWidth: 160, maxWidth: 260),
                 child: TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
                     labelText:
                         'Search ${_recordLabel(widget.type).toLowerCase()}s',
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    isDense: true,
                   ),
                   onChanged: (_) => setState(() {}),
-                ),
-              ),
-              SizedBox(
-                width: 180,
-                child: DropdownButtonFormField<String?>(
-                  initialValue: _statusFilter,
-                  decoration: const InputDecoration(labelText: 'Status'),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('All statuses'),
-                    ),
-                    ...widget.entries
-                        .map((entry) => entry.status)
-                        .toSet()
-                        .map(
-                          (status) => DropdownMenuItem<String?>(
-                            value: status,
-                            child: Text(status),
-                          ),
-                        ),
-                  ],
-                  onChanged: (value) => setState(() => _statusFilter = value),
-                ),
-              ),
-              SizedBox(
-                width: 220,
-                child: DropdownButtonFormField<String?>(
-                  initialValue: _assigneeFilter,
-                  decoration: const InputDecoration(labelText: 'Assignee'),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('All assignees'),
-                    ),
-                    ...widget.assignees.map(
-                      (assignee) => DropdownMenuItem<String?>(
-                        value: assignee.id,
-                        child: Text(assignee.name),
-                      ),
-                    ),
-                  ],
-                  onChanged: (value) => setState(() => _assigneeFilter = value),
-                ),
-              ),
-              SizedBox(
-                width: 220,
-                child: DropdownButtonFormField<_RecordSortOption>(
-                  initialValue: _sortOption,
-                  decoration: const InputDecoration(labelText: 'Sort by'),
-                  items: const [
-                    DropdownMenuItem(
-                      value: _RecordSortOption.newest,
-                      child: Text('Newest first'),
-                    ),
-                    DropdownMenuItem(
-                      value: _RecordSortOption.oldest,
-                      child: Text('Oldest first'),
-                    ),
-                    DropdownMenuItem(
-                      value: _RecordSortOption.status,
-                      child: Text('Status'),
-                    ),
-                    DropdownMenuItem(
-                      value: _RecordSortOption.id,
-                      child: Text('ID'),
-                    ),
-                  ],
-                  onChanged: (value) => setState(() => _sortOption = value!),
                 ),
               ),
             ],
@@ -1074,64 +1976,22 @@ class _ProjectRecordTabState extends State<_ProjectRecordTab> {
             ),
           ],
           const SizedBox(height: 16),
-          entries.isEmpty
+          filteredEntries.isEmpty
               ? Text(
-                  'No ${_recordLabel(widget.type).toLowerCase()} entries match the current filters.',
+                  'No ${_recordLabel(widget.type).toLowerCase()} entries match the current search.',
                 )
-              : Column(
-                  children: entries
-                      .map(
-                        (entry) => Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          child: Padding(
-                            padding: const EdgeInsets.all(16),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Expanded(
-                                      child: Text(
-                                        entry.id,
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.titleMedium,
-                                      ),
-                                    ),
-                                    Chip(label: Text(entry.status)),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  '${_recordLabel(widget.type)} Description',
-                                  style: Theme.of(context).textTheme.labelLarge,
-                                ),
-                                const SizedBox(height: 4),
-                                Text(entry.description),
-                                const SizedBox(height: 12),
-                                Text(
-                                  'Assignee: ${controller.assigneeName(entry.assigneeId)}',
-                                ),
-                                const SizedBox(height: 4),
-                                if (widget.type == ProjectRecordType.risk)
-                                  Text(
-                                    'Probability: ${entry.probability?.name.toUpperCase() ?? 'Unspecified'}',
-                                  ),
-                                if (widget.type == ProjectRecordType.risk)
-                                  const SizedBox(height: 4),
-                                Text(
-                                  'Comments: ${entry.comments.isEmpty ? 'None' : entry.comments}',
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  'Created: ${DateFormat('MMM d, yyyy HH:mm').format(entry.createdAt)}',
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      )
-                      .toList(growable: false),
+              : _RecordTable(
+                  entries: filteredEntries,
+                  controller: controller,
+                  project: widget.project,
+                  assignees: widget.assignees,
+                  type: widget.type,
+                  canEdit: widget.canEdit,
+                  onDelete: (entry) => controller.deleteProjectRecord(
+                    projectId: widget.project.id,
+                    type: widget.type,
+                    entryId: entry.id,
+                  ),
                 ),
         ],
       ),
@@ -1144,6 +2004,7 @@ class _ProjectRecordTabState extends State<_ProjectRecordTab> {
       builder: (context) => _ProjectRecordEditorDialog(
         type: widget.type,
         assignees: widget.assignees,
+        userName: widget.controller.currentUserName,
         onSave:
             ({
               assigneeId,
@@ -1167,66 +2028,902 @@ class _ProjectRecordTabState extends State<_ProjectRecordTab> {
   }
 }
 
-class _ProjectKanbanTab extends StatelessWidget {
+// ── Record table ────────────────────────────────────────────────────────────
+
+class _RecordTable extends StatefulWidget {
+  const _RecordTable({
+    required this.entries,
+    required this.controller,
+    required this.project,
+    required this.assignees,
+    required this.type,
+    required this.canEdit,
+    required this.onDelete,
+  });
+
+  final List<ProjectRecordEntry> entries;
+  final AppController controller;
+  final ProjectModel project;
+  final List<AssigneeModel> assignees;
+  final ProjectRecordType type;
+  final bool canEdit;
+  final void Function(ProjectRecordEntry) onDelete;
+
+  @override
+  State<_RecordTable> createState() => _RecordTableState();
+}
+
+class _RecordTableState extends State<_RecordTable> {
+  // ── Column definitions ────────────────────────────────────────────────────
+  // Base columns shared by all record types
+  static const _baseColDefs = [
+    TableColDef(id: 'id',          label: 'ID',          width: 80),
+    TableColDef(id: 'description', label: 'Description', width: 220, canHide: false),
+    TableColDef(id: 'status',      label: 'Status',      width: 130),
+    TableColDef(id: 'assignee',    label: 'Assignee',    width: 130),
+    TableColDef(id: 'comments',    label: 'Comments',    width: 200, sortable: false),
+    TableColDef(id: 'probability', label: 'Probability', width: 120),
+    TableColDef(id: 'createdAt',   label: 'Created',     width: 110),
+    TableColDef(id: 'updatedBy',   label: 'Updated By',  width: 130),
+    TableColDef(id: 'updatedAt',   label: 'Last Updated',width: 140),
+  ];
+
+  bool get _isRisk => widget.type == ProjectRecordType.risk;
+
+  List<TableColDef> get _allColDefs => _isRisk
+      ? _baseColDefs
+      : _baseColDefs.where((c) => c.id != 'probability').toList(growable: false);
+
+  List<String> get _defaultColOrder =>
+      _allColDefs.map((c) => c.id).toList(growable: false);
+
+  // ── Sort / filter state ───────────────────────────────────────────────────
+  String? _sortColId;
+  bool _sortAscending = true;
+  String? _filterStatus;
+  String? _filterAssignee;
+  RiskProbability? _filterProbability;
+
+  // ── Column pref state ─────────────────────────────────────────────────────
+  List<String> _colOrder = [];
+  Set<String> _hiddenCols = {};
+  Map<String, double> _colWidths = {};
+  bool _prefsLoaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _colOrder = _defaultColOrder;
+    _loadPrefs();
+  }
+
+  Future<void> _loadPrefs() async {
+    final key = widget.type.name; // 'issue', 'risk', 'action', 'decision'
+    final prefs = await TableColPrefs.load(key, _defaultColOrder);
+    if (mounted) {
+      setState(() {
+        _colOrder = prefs.order;
+        _hiddenCols = prefs.hidden;
+        _colWidths = prefs.widths;
+        _prefsLoaded = true;
+      });
+    }
+  }
+
+  Future<void> _savePrefs() async {
+    final key = widget.type.name;
+    await TableColPrefs.save(
+        key, TableColPrefs(order: _colOrder, hidden: _hiddenCols, widths: _colWidths));
+  }
+
+  void _onResized(String colId, double newWidth) {
+    setState(() => _colWidths = {..._colWidths, colId: newWidth});
+    _savePrefs();
+  }
+
+  void _onReorder(String fromId, String toId) {
+    final from = _colOrder.indexOf(fromId);
+    final to = _colOrder.indexOf(toId);
+    if (from == -1 || to == -1 || from == to) return;
+    setState(() {
+      _colOrder.removeAt(from);
+      _colOrder.insert(to, fromId);
+    });
+    _savePrefs();
+  }
+
+  void _onSort(String colId) {
+    setState(() {
+      if (_sortColId == colId) {
+        _sortAscending = !_sortAscending;
+      } else {
+        _sortColId = colId;
+        _sortAscending = true;
+      }
+    });
+  }
+
+  void _toggleHide(String colId) {
+    setState(() {
+      if (_hiddenCols.contains(colId)) {
+        _hiddenCols = {..._hiddenCols}..remove(colId);
+      } else {
+        _hiddenCols = {..._hiddenCols, colId};
+      }
+    });
+    _savePrefs();
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  // ── Sort / filter helpers ─────────────────────────────────────────────────
+
+  List<ProjectRecordEntry> _sorted(List<ProjectRecordEntry> source) {
+    final id = _sortColId;
+    if (id == null) return source;
+    final result = List<ProjectRecordEntry>.from(source);
+    result.sort((a, b) {
+      int cmp;
+      switch (id) {
+        case 'id':
+          cmp = a.id.compareTo(b.id);
+        case 'description':
+          cmp = a.description.toLowerCase().compareTo(b.description.toLowerCase());
+        case 'status':
+          cmp = a.status.toLowerCase().compareTo(b.status.toLowerCase());
+        case 'assignee':
+          cmp = widget.controller
+              .assigneeName(a.assigneeId)
+              .toLowerCase()
+              .compareTo(widget.controller.assigneeName(b.assigneeId).toLowerCase());
+        case 'probability':
+          cmp = (a.probability?.index ?? -1).compareTo(b.probability?.index ?? -1);
+        case 'createdAt':
+          cmp = a.createdAt.compareTo(b.createdAt);
+        case 'updatedAt':
+          cmp = (a.updatedAt ?? a.createdAt).compareTo(b.updatedAt ?? b.createdAt);
+        case 'updatedBy':
+          cmp = a.updatedBy.toLowerCase().compareTo(b.updatedBy.toLowerCase());
+        default:
+          cmp = 0;
+      }
+      return _sortAscending ? cmp : -cmp;
+    });
+    return result;
+  }
+
+  List<ProjectRecordEntry> _filtered(List<ProjectRecordEntry> source) {
+    return source.where((entry) {
+      if (_filterStatus != null && entry.status != _filterStatus) return false;
+      if (_filterAssignee != null && entry.assigneeId != _filterAssignee) return false;
+      if (_isRisk && _filterProbability != null &&
+          entry.probability != _filterProbability) return false;
+      return true;
+    }).toList(growable: false);
+  }
+
+  // ── Visible columns ───────────────────────────────────────────────────────
+
+  static const _actionsColDef = TableColDef(
+    id: 'actions', label: '', width: 56,
+    sortable: false, canHide: false, canReorder: false,
+  );
+
+  List<TableColDef> _visibleCols() {
+    final byId = {for (final c in _allColDefs) c.id: c};
+    final cols = _colOrder
+        .where((id) => !_hiddenCols.contains(id))
+        .map((id) {
+          final col = byId[id];
+          if (col == null) return null;
+          final w = _colWidths[id];
+          return w != null ? col.withWidth(w) : col;
+        })
+        .whereType<TableColDef>()
+        .toList();
+    if (widget.canEdit) cols.add(_actionsColDef);
+    return cols;
+  }
+
+  // ── Cell builders ─────────────────────────────────────────────────────────
+
+  Widget _cellFor(String colId, ProjectRecordEntry entry, BuildContext context) {
+    final theme = Theme.of(context);
+    switch (colId) {
+      case 'id':
+        return Text(entry.id,
+            style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600));
+      case 'description':
+        return _textCell(context, entry, entry.description,
+            '${_recordLabel(widget.type)} Description',
+            width: 196, maxLines: 3,
+            onSave: (v) => _saveField(entry, description: v));
+      case 'status':
+        return _statusCell(context, entry);
+      case 'assignee':
+        return _assigneeCell(context, entry);
+      case 'comments':
+        return _textCell(context, entry, entry.comments, 'Comments',
+            width: 176, isComments: true,
+            onSave: (v) => _saveField(entry, comments: v));
+      case 'probability':
+        return _probabilityCell(context, entry);
+      case 'createdAt':
+        return Text(DateFormat('MMM d, yyyy').format(entry.createdAt),
+            style: theme.textTheme.bodySmall);
+      case 'updatedBy':
+        return Text(entry.updatedBy.isEmpty ? '—' : entry.updatedBy,
+            style: theme.textTheme.bodySmall);
+      case 'updatedAt':
+        return Text(
+          entry.updatedAt == null
+              ? '—'
+              : DateFormat('MMM d, yyyy HH:mm').format(entry.updatedAt!),
+          style: theme.textTheme.bodySmall,
+        );
+      case 'actions':
+        return IconButton(
+          tooltip: 'Delete',
+          icon: Icon(Icons.delete_outline_rounded,
+              size: 18, color: theme.colorScheme.error),
+          onPressed: () => widget.onDelete(entry),
+          visualDensity: VisualDensity.compact,
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_prefsLoaded) return const SizedBox.shrink();
+
+    final theme = Theme.of(context);
+    final displayEntries = _sorted(_filtered(widget.entries));
+    final visibleCols = _visibleCols();
+    final hideable = _allColDefs.where((c) => c.canHide).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Toolbar ────────────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              _filterChip(context, 'Status',
+                  _filterStatus ?? 'All statuses', Icons.tune_rounded, () async {
+                final v = await _showStringPicker(context, 'Filter by Status',
+                    [null, ...defaultRecordStatuses], _filterStatus);
+                if (v != null || mounted) {
+                  setState(() => _filterStatus = v == '' ? null : v);
+                }
+              }),
+              _filterChip(context, 'Assignee',
+                  _filterAssignee == null
+                      ? 'All assignees'
+                      : widget.controller.assigneeName(_filterAssignee),
+                  Icons.tune_rounded, () async {
+                final ids = [null, ...widget.assignees.map((a) => a.id)];
+                final v = await _showStringPicker(
+                    context, 'Filter by Assignee', ids, _filterAssignee,
+                    labelFor: (id) => id == null
+                        ? 'All assignees'
+                        : widget.controller.assigneeName(id));
+                if (v != null || mounted) {
+                  setState(() => _filterAssignee = v == '' ? null : v);
+                }
+              }),
+              if (_isRisk)
+                _filterChip(context, 'Probability',
+                    _filterProbability == null
+                        ? 'All probabilities'
+                        : _filterProbability!.name.toUpperCase(),
+                    Icons.tune_rounded, () async {
+                  final options = [null, ...RiskProbability.values];
+                  final v = await _showStringPicker(
+                      context, 'Filter by Probability',
+                      options.map((p) => p?.name).toList(), _filterProbability?.name,
+                      labelFor: (s) => s == null ? 'All probabilities' : s.toUpperCase());
+                  if (v != null || mounted) {
+                    setState(() => _filterProbability = v == ''
+                        ? null
+                        : RiskProbability.values
+                            .where((p) => p.name == v)
+                            .firstOrNull);
+                  }
+                }),
+              // Column visibility button
+              PopupMenuButton<String>(
+                tooltip: 'Show/hide columns',
+                icon: const Icon(Icons.view_column_outlined),
+                itemBuilder: (_) => hideable
+                    .map((col) => CheckedPopupMenuItem<String>(
+                          value: col.id,
+                          checked: !_hiddenCols.contains(col.id),
+                          child: Text(col.label),
+                        ))
+                    .toList(growable: false),
+                onSelected: _toggleHide,
+              ),
+              // Auto column width button
+              IconButton(
+                tooltip: 'Reset column widths',
+                icon: const Icon(Icons.fit_screen_rounded, size: 20),
+                onPressed: () {
+                  setState(() => _colWidths = {});
+                  _savePrefs();
+                },
+              ),
+            ],
+          ),
+        ),
+        // ── Table ──────────────────────────────────────────────────────────
+        CustomDataTable(
+          columns: visibleCols,
+          sortColId: _sortColId,
+          sortAscending: _sortAscending,
+          onSort: _onSort,
+          onReorder: _onReorder,
+          onResized: _onResized,
+          pinnedLeadingCount: 0,
+          pinnedTrailingCount: widget.canEdit ? 1 : 0,
+          rows: [
+            for (final entry in displayEntries)
+              [for (final col in visibleCols) _cellFor(col.id, entry, context)],
+          ],
+        ),
+      ],
+    );
+  }
+
+  // ── Filter chip helper ────────────────────────────────────────────────────
+
+  Widget _filterChip(BuildContext context, String label, String value,
+      IconData icon, VoidCallback onTap) {
+    final active = !value.startsWith('All');
+    return ActionChip(
+      avatar: Icon(icon, size: 14),
+      label: Text(value, overflow: TextOverflow.ellipsis),
+      backgroundColor:
+          active ? Theme.of(context).colorScheme.primaryContainer : null,
+      onPressed: onTap,
+    );
+  }
+
+  // ── String picker dialog ──────────────────────────────────────────────────
+
+  Future<String?> _showStringPicker(
+    BuildContext context,
+    String title,
+    List<String?> options,
+    String? current, {
+    String Function(String?)? labelFor,
+  }) {
+    return showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(title),
+        children: options
+            .map((v) => SimpleDialogOption(
+                  onPressed: () => Navigator.of(ctx).pop(v ?? ''),
+                  child: Text(labelFor?.call(v) ?? (v == null ? 'All' : v)),
+                ))
+            .toList(),
+      ),
+    );
+  }
+
+  // ── Field save helper ─────────────────────────────────────────────────────
+
+  Future<void> _saveField(
+    ProjectRecordEntry entry, {
+    String? status,
+    String? assigneeId,
+    bool clearAssigneeId = false,
+    String? description,
+    String? comments,
+    RiskProbability? probability,
+    bool clearProbability = false,
+  }) async {
+    await widget.controller.updateProjectRecord(
+      projectId: widget.project.id,
+      type: widget.type,
+      entryId: entry.id,
+      status: status,
+      assigneeId: assigneeId,
+      clearAssigneeId: clearAssigneeId,
+      description: description,
+      comments: comments,
+      probability: probability,
+      clearProbability: clearProbability,
+    );
+  }
+
+  // ── Inline edit cell widgets ──────────────────────────────────────────────
+
+  Widget _statusCell(BuildContext context, ProjectRecordEntry entry) {
+    if (!widget.canEdit) {
+      return Chip(
+        label: Text(entry.status, style: Theme.of(context).textTheme.labelSmall),
+        visualDensity: VisualDensity.compact,
+        padding: EdgeInsets.zero,
+      );
+    }
+    return DropdownButton<String>(
+      value: defaultRecordStatuses.contains(entry.status)
+          ? entry.status
+          : defaultRecordStatuses.first,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: defaultRecordStatuses
+          .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+          .toList(),
+      onChanged: (value) {
+        if (value != null && value != entry.status) _saveField(entry, status: value);
+      },
+    );
+  }
+
+  Widget _assigneeCell(BuildContext context, ProjectRecordEntry entry) {
+    final name = widget.controller.assigneeName(entry.assigneeId);
+    if (!widget.canEdit) {
+      return Text(name, style: Theme.of(context).textTheme.bodySmall);
+    }
+    return DropdownButton<String?>(
+      value: entry.assigneeId,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: [
+        const DropdownMenuItem<String?>(value: null, child: Text('Unassigned')),
+        ...widget.assignees.map(
+            (a) => DropdownMenuItem<String?>(value: a.id, child: Text(a.name))),
+      ],
+      onChanged: (value) {
+        if (value != entry.assigneeId) {
+          _saveField(entry, assigneeId: value, clearAssigneeId: value == null);
+        }
+      },
+    );
+  }
+
+  Widget _probabilityCell(BuildContext context, ProjectRecordEntry entry) {
+    if (!widget.canEdit) {
+      return Text(entry.probability?.name.toUpperCase() ?? '—',
+          style: Theme.of(context).textTheme.bodySmall);
+    }
+    return DropdownButton<RiskProbability?>(
+      value: entry.probability,
+      isDense: true,
+      isExpanded: true,
+      underline: const SizedBox.shrink(),
+      items: [
+        const DropdownMenuItem<RiskProbability?>(value: null, child: Text('—')),
+        ...RiskProbability.values.map((p) => DropdownMenuItem<RiskProbability?>(
+              value: p,
+              child: Text(p.name.toUpperCase()),
+            )),
+      ],
+      onChanged: (value) {
+        if (value != entry.probability) {
+          _saveField(entry, probability: value, clearProbability: value == null);
+        }
+      },
+    );
+  }
+
+  Widget _textCell(
+    BuildContext context,
+    ProjectRecordEntry entry,
+    String value,
+    String fieldLabel, {
+    required Future<void> Function(String newValue) onSave,
+    int maxLines = 2,
+    double width = 200,
+    bool isComments = false,
+  }) {
+    final theme = Theme.of(context);
+    if (!widget.canEdit) {
+      return SizedBox(
+        width: width,
+        child: isComments
+            ? MarkdownText(value.isEmpty ? '—' : value,
+                style: theme.textTheme.bodySmall,
+                maxLines: maxLines,
+                overflow: TextOverflow.ellipsis)
+            : Text(value.isEmpty ? '—' : value,
+                style: theme.textTheme.bodySmall,
+                maxLines: maxLines,
+                overflow: TextOverflow.ellipsis),
+      );
+    }
+    return InkWell(
+      onTap: () async {
+        final result = await showDialog<String>(
+          context: context,
+          builder: (ctx) => _RecordTextEditDialog(
+            label: fieldLabel,
+            initialValue: value,
+            isComments: isComments,
+            userName: widget.controller.currentUserName,
+          ),
+        );
+        if (result != null) await onSave(result);
+      },
+      child: SizedBox(
+        width: width,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: isComments
+                  ? MarkdownText(value.isEmpty ? '—' : value,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(decoration: TextDecoration.underline),
+                      maxLines: maxLines,
+                      overflow: TextOverflow.ellipsis)
+                  : Text(value.isEmpty ? '—' : value,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(decoration: TextDecoration.underline),
+                      maxLines: maxLines,
+                      overflow: TextOverflow.ellipsis),
+            ),
+            Icon(Icons.edit_outlined, size: 14, color: theme.colorScheme.outline),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── Record text-edit dialog ─────────────────────────────────────────────────
+
+class _RecordTextEditDialog extends StatefulWidget {
+  const _RecordTextEditDialog({
+    required this.label,
+    required this.initialValue,
+    this.isComments = false,
+    this.userName = '',
+  });
+
+  final String label;
+  final String initialValue;
+  final bool isComments;
+  final String userName;
+
+  @override
+  State<_RecordTextEditDialog> createState() => _RecordTextEditDialogState();
+}
+
+class _RecordTextEditDialogState extends State<_RecordTextEditDialog> {
+  // For comments mode: new text goes here; existing is shown read-only below.
+  // For non-comment fields: single editable controller.
+  late final TextEditingController _controller;
+  final TextEditingController _newCommentController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.initialValue);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _newCommentController.dispose();
+    super.dispose();
+  }
+
+  void _save(BuildContext context) {
+    if (widget.isComments) {
+      final newText = _newCommentController.text.trim();
+      if (newText.isEmpty) {
+        // Nothing new typed — return existing unchanged.
+        Navigator.of(context).pop(widget.initialValue);
+      } else {
+        final prefix = commentTimestampPrefix(widget.userName);
+        final separator = widget.initialValue.isEmpty ? '' : '\n';
+        Navigator.of(context).pop(prefix + newText + separator + widget.initialValue);
+      }
+    } else {
+      Navigator.of(context).pop(_controller.text);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    if (widget.isComments) {
+      return AlertDialog(
+        title: const Text('Add Comment'),
+        content: SizedBox(
+          width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 580.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              MarkdownToolbar(controller: _newCommentController),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _newCommentController,
+                decoration: const InputDecoration(
+                  labelText: 'New comment',
+                  hintText: 'Use **bold**, *italic*, `code`, - bullet, 1. numbered',
+                ),
+                minLines: 4,
+                maxLines: 10,
+                autofocus: true,
+              ),
+              if (widget.initialValue.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Divider(color: theme.colorScheme.outlineVariant),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Text('Previous comments',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface
+                              .withValues(alpha: 0.55))),
+                ),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 180),
+                  child: SingleChildScrollView(
+                    child: MarkdownText(
+                      widget.initialValue,
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => _save(context),
+            child: const Text('Save'),
+          ),
+        ],
+      );
+    }
+
+    // ── Non-comment field ────────────────────────────────────────────────────
+    return AlertDialog(
+      title: Text('Edit ${widget.label}'),
+      content: SizedBox(
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 560.0),
+        child: TextField(
+          controller: _controller,
+          minLines: 3,
+          maxLines: 8,
+          autofocus: true,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        ElevatedButton(
+          onPressed: () => _save(context),
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
+}
+
+class _ProjectKanbanTab extends StatefulWidget {
   const _ProjectKanbanTab({
     required this.controller,
     required this.project,
     required this.tasks,
+    required this.canEdit,
+    required this.onStatusChanged,
   });
 
   final AppController controller;
   final ProjectModel project;
   final List<TaskModel> tasks;
+  final bool canEdit;
+  final Future<void> Function(TaskModel task, String newStatus) onStatusChanged;
+
+  @override
+  State<_ProjectKanbanTab> createState() => _ProjectKanbanTabState();
+}
+
+class _ProjectKanbanTabState extends State<_ProjectKanbanTab> {
+  /// The status column currently being hovered over during a drag.
+  String? _hoverStatus;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        children: project.taskStatuses
-            .map(
-              (status) => Container(
-                width: 280,
-                margin: const EdgeInsets.only(right: 16),
-                child: SectionCard(
-                  title: status,
-                  subtitle: 'Tasks currently in this workflow column.',
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      for (final task in tasks.where(
-                        (task) => task.status == status,
-                      ))
-                        Card(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          child: Padding(
-                            padding: const EdgeInsets.all(14),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '${task.taskCode} - ${task.title}',
-                                  style: Theme.of(context).textTheme.titleSmall,
-                                ),
-                                const SizedBox(height: 8),
-                                Text(controller.assigneeName(task.assigneeId)),
-                                const SizedBox(height: 4),
-                                Text('Due: ${_formatDate(task.dueDate)}'),
-                              ],
-                            ),
-                          ),
-                        ),
-                      if (!tasks.any((task) => task.status == status))
-                        const Text('No tasks in this status.'),
-                    ],
-                  ),
-                ),
-              ),
-            )
+        children: widget.project.taskStatuses
+            .map((status) => _buildColumn(context, theme, status))
             .toList(growable: false),
       ),
     );
+  }
+
+  Widget _buildColumn(BuildContext context, ThemeData theme, String status) {
+    final columnTasks =
+        widget.tasks.where((t) => t.status == status).toList(growable: false);
+    final isHover = _hoverStatus == status;
+
+    Widget column = Container(
+      width: 280,
+      margin: const EdgeInsets.only(right: 16),
+      child: SectionCard(
+        title: status,
+        subtitle: 'Tasks currently in this workflow column.',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final task in columnTasks)
+              _buildCard(context, theme, task),
+            if (columnTasks.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'No tasks in this status.',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+
+    if (!widget.canEdit) return column;
+
+    return DragTarget<TaskModel>(
+      onWillAcceptWithDetails: (details) {
+        if (details.data.status == status) return false;
+        setState(() => _hoverStatus = status);
+        return true;
+      },
+      onLeave: (_) => setState(() {
+        if (_hoverStatus == status) _hoverStatus = null;
+      }),
+      onAcceptWithDetails: (details) {
+        setState(() => _hoverStatus = null);
+        widget.onStatusChanged(details.data, status);
+      },
+      builder: (ctx, candidateData, _) => AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        decoration: isHover
+            ? BoxDecoration(
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: theme.colorScheme.primary,
+                  width: 2,
+                ),
+                color: theme.colorScheme.primary.withValues(alpha: 0.05),
+              )
+            : const BoxDecoration(),
+        child: column,
+      ),
+    );
+  }
+
+  Widget _buildCard(BuildContext context, ThemeData theme, TaskModel task) {
+    final assignee = task.assigneeId == null
+        ? null
+        : widget.controller.assignees.cast<AssigneeModel?>().firstWhere(
+            (a) => a?.id == task.assigneeId,
+            orElse: () => null,
+          );
+    final isOoo = assignee != null && _checkOoo(task, assignee);
+    final card = Card(
+      margin: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${task.taskCode} - ${task.title}',
+              style: theme.textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    widget.controller.assigneeName(task.assigneeId),
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                if (isOoo)
+                  Chip(
+                    label: const Text('OOO'),
+                    backgroundColor:
+                        theme.colorScheme.errorContainer.withValues(alpha: 0.6),
+                    labelStyle: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onErrorContainer,
+                    ),
+                    padding: EdgeInsets.zero,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Target: ${_formatDateTime(task.dueDate)}',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!widget.canEdit) return card;
+
+    return Draggable<TaskModel>(
+      data: task,
+      feedback: Material(
+        elevation: 6,
+        borderRadius: BorderRadius.circular(12),
+        child: SizedBox(
+          width: 252,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '${task.taskCode} - ${task.title}',
+                  style: theme.textTheme.titleSmall,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  widget.controller.assigneeName(task.assigneeId),
+                  style: theme.textTheme.bodySmall,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      childWhenDragging: Opacity(opacity: 0.35, child: card),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.grab,
+        child: card,
+      ),
+    );
+  }
+
+  bool _checkOoo(TaskModel task, AssigneeModel assignee) {
+    if (assignee.oooRanges.isEmpty) return false;
+    final start = task.startDate;
+    if (start == null) return false;
+    final end = computeTaskEndDate(task, widget.project) ??
+        task.dueDate ??
+        start.add(const Duration(days: 1));
+    return assignee.oooRanges
+        .any((r) => r.start.isBefore(end) && r.end.isAfter(start));
   }
 }
 
@@ -1254,18 +2951,24 @@ class _ProjectCalendarTab extends StatelessWidget {
         ),
       ),
       ...tasks
-          .where((task) => task.dueDate != null)
+          .where((task) => task.startDate != null || task.dueDate != null)
           .map(
-            (task) => GanttChartEntry(
-              label: '${task.taskCode} - ${task.title}',
-              subtitle:
-                  'Task • ${controller.phaseName(project.id, task.phaseId)} • ${task.status}',
-              start: task.dueDate,
-              end: task.dueDate,
-              color: task.isMilestone
-                  ? const Color(0xFFD96C45)
-                  : const Color(0xFF2E5BFF),
-            ),
+            (task) {
+              final taskStart = task.startDate;
+              final taskEnd = taskStart != null
+                  ? computeTaskEndDate(task, project) ?? task.dueDate ?? taskStart
+                  : task.dueDate;
+              return GanttChartEntry(
+                label: '${task.taskCode} - ${task.title}',
+                subtitle:
+                    'Task • ${controller.phaseName(project.id, task.phaseId)} • ${task.status}',
+                start: taskStart ?? taskEnd,
+                end: taskEnd ?? taskStart,
+                color: task.isMilestone
+                    ? const Color(0xFFD96C45)
+                    : const Color(0xFF2E5BFF),
+              );
+            },
           ),
     ];
 
@@ -1277,7 +2980,10 @@ class _ProjectCalendarTab extends StatelessWidget {
               .where((entry) => entry.start != null || entry.end != null)
               .isEmpty
           ? const Text('No dated project items yet.')
-          : GanttChartView(entries: entries, labelWidth: 420),
+          : GanttChartView(
+              entries: entries,
+              publicHolidays: project.publicHolidays,
+            ),
     );
   }
 }
@@ -1287,10 +2993,12 @@ class _ProjectRecordEditorDialog extends StatefulWidget {
     required this.type,
     required this.assignees,
     required this.onSave,
+    this.userName = '',
   });
 
   final ProjectRecordType type;
   final List<AssigneeModel> assignees;
+  final String userName;
   final Future<void> Function({
     String? assigneeId,
     required String description,
@@ -1317,7 +3025,9 @@ class _ProjectRecordEditorDialogState
   void initState() {
     super.initState();
     _descriptionController = TextEditingController();
-    _commentsController = TextEditingController();
+    _commentsController = TextEditingController(
+      text: commentTimestampPrefix(widget.userName),
+    );
   }
 
   @override
@@ -1333,7 +3043,7 @@ class _ProjectRecordEditorDialogState
     return AlertDialog(
       title: Text('Add $label'),
       content: SizedBox(
-        width: 500,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 500.0),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1362,11 +3072,16 @@ class _ProjectRecordEditorDialogState
               maxLines: 5,
             ),
             const SizedBox(height: 14),
+            MarkdownToolbar(controller: _commentsController),
+            const SizedBox(height: 6),
             TextField(
               controller: _commentsController,
-              decoration: const InputDecoration(labelText: 'Comments'),
-              minLines: 2,
-              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Comments',
+                hintText: 'Use **bold**, *italic*, `code`, - bullet, 1. numbered',
+              ),
+              minLines: 4,
+              maxLines: 8,
             ),
             const SizedBox(height: 14),
             DropdownButtonFormField<String>(
@@ -1419,10 +3134,14 @@ class _ProjectRecordEditorDialogState
         ),
         ElevatedButton(
           onPressed: () async {
+            // Strip the timestamp prefix if the user typed nothing after it.
+            final rawComments = _commentsController.text;
+            final prefix = commentTimestampPrefix(widget.userName);
+            final comments = rawComments == prefix ? '' : rawComments;
             await widget.onSave(
               assigneeId: _selectedAssigneeId,
               description: _descriptionController.text,
-              comments: _commentsController.text,
+              comments: comments,
               status: _selectedStatus,
               probability: _selectedProbability,
             );
@@ -1445,6 +3164,7 @@ class _ProjectEditorDialog extends StatefulWidget {
     required this.timezones,
     required this.nextProjectCode,
     required this.canManageStatuses,
+    required this.isSuperAdmin,
     this.initialProject,
   });
 
@@ -1458,6 +3178,17 @@ class _ProjectEditorDialog extends StatefulWidget {
     required List<ProjectPhase> phases,
     required List<String> taskStatuses,
     required List<String> assignedAssigneeIds,
+    required bool isConfidential,
+    required Map<String, Set<String>> grantsByAssigneeId,
+    required String? actualStartStatus,
+    required String? actualEndStatus,
+    required String? actualStartResetStatus,
+    required String? actualEndResetStatus,
+    required bool allowSampleData,
+    required List<int> workingDays,
+    required int workDayStartHour,
+    required int workDayEndHour,
+    required List<DateTime> publicHolidays,
   })
   onSave;
   final List<AssigneeModel> assignees;
@@ -1466,6 +3197,7 @@ class _ProjectEditorDialog extends StatefulWidget {
   final List<String> timezones;
   final String nextProjectCode;
   final bool canManageStatuses;
+  final bool isSuperAdmin;
 
   @override
   State<_ProjectEditorDialog> createState() => _ProjectEditorDialogState();
@@ -1481,8 +3213,19 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
   late List<String> _statuses;
   late List<ProjectPhase> _phases;
   late Set<String> _assignedAssigneeIds;
+  late Map<String, Set<String>> _grantsByAssigneeId;
   DateTime? _startDate;
   DateTime? _endDate;
+  late bool _isConfidential;
+  String? _actualStartStatus;
+  String? _actualEndStatus;
+  String? _actualStartResetStatus;
+  String? _actualEndResetStatus;
+  late bool _allowSampleData;
+  late List<int> _workingDays;
+  late int _workDayStartHour;
+  late int _workDayEndHour;
+  List<DateTime> _publicHolidays = [];
 
   @override
   void initState() {
@@ -1510,8 +3253,30 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
             assignee.projectIds.contains(widget.initialProject!.id))
           assignee.id,
     };
+    _grantsByAssigneeId = {
+      for (final assignee in widget.assignees)
+        if (widget.initialProject != null &&
+            assignee.projectGrants.containsKey(widget.initialProject!.id))
+          assignee.id: Set<String>.from(
+            assignee.projectGrants[widget.initialProject!.id]!,
+          ),
+    };
     _startDate = widget.initialProject?.startDate;
     _endDate = widget.initialProject?.endDate;
+    _isConfidential = widget.initialProject?.isConfidential ?? false;
+    _actualStartStatus = widget.initialProject?.actualStartStatus;
+    _actualEndStatus = widget.initialProject?.actualEndStatus;
+    _actualStartResetStatus = widget.initialProject?.actualStartResetStatus;
+    _actualEndResetStatus = widget.initialProject?.actualEndResetStatus;
+    _allowSampleData = widget.initialProject?.allowSampleData ?? true;
+    _workingDays = List<int>.from(
+      widget.initialProject?.workingDays ?? [1, 2, 3, 4, 5],
+    );
+    _workDayStartHour = widget.initialProject?.workDayStartHour ?? 9;
+    _workDayEndHour = widget.initialProject?.workDayEndHour ?? 17;
+    _publicHolidays = List<DateTime>.from(
+      widget.initialProject?.publicHolidays ?? [],
+    );
   }
 
   @override
@@ -1530,7 +3295,7 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
         widget.initialProject == null ? 'New project' : 'Edit project',
       ),
       content: SizedBox(
-        width: 540,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 540.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -1695,6 +3460,299 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
                 ),
               ],
               const SizedBox(height: 18),
+              // ── Actual Date Triggers ─────────────────────────────────────
+              if (widget.canManageStatuses) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Actual Date Triggers',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Select which status automatically records the Actual Start and Actual End timestamps when a task moves to that status.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Actual Start Status',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<String?>(
+                            value: _actualStartStatus,
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                  value: null, child: Text('— Not set —')),
+                              ..._statuses.map((s) =>
+                                  DropdownMenuItem<String?>(
+                                      value: s, child: Text(s))),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _actualStartStatus = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Actual End Status',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<String?>(
+                            value: _actualEndStatus,
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                  value: null, child: Text('— Not set —')),
+                              ..._statuses.map((s) =>
+                                  DropdownMenuItem<String?>(
+                                      value: s, child: Text(s))),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _actualEndStatus = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Select which status clears (resets) the Actual Start and Actual End timestamps.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Reset Actual Start',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<String?>(
+                            value: _actualStartResetStatus,
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                  value: null, child: Text('— Not set —')),
+                              ..._statuses.map((s) =>
+                                  DropdownMenuItem<String?>(
+                                      value: s, child: Text(s))),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _actualStartResetStatus = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Reset Actual End',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<String?>(
+                            value: _actualEndResetStatus,
+                            isExpanded: true,
+                            items: [
+                              const DropdownMenuItem<String?>(
+                                  value: null, child: Text('— Not set —')),
+                              ..._statuses.map((s) =>
+                                  DropdownMenuItem<String?>(
+                                      value: s, child: Text(s))),
+                            ],
+                            onChanged: (v) =>
+                                setState(() => _actualEndResetStatus = v),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+              ],
+              // ── Work Calendar ────────────────────────────────────────────
+              if (widget.canManageStatuses) ...[
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Work Calendar',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Defines the working days and hours used to calculate task end dates.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                // Working days
+                Text('Working Days',
+                    style: Theme.of(context).textTheme.bodySmall),
+                const SizedBox(height: 6),
+                Wrap(
+                  spacing: 6,
+                  children: [
+                    for (final entry in [
+                      (1, 'Mon'),
+                      (2, 'Tue'),
+                      (3, 'Wed'),
+                      (4, 'Thu'),
+                      (5, 'Fri'),
+                      (6, 'Sat'),
+                      (7, 'Sun'),
+                    ])
+                      FilterChip(
+                        label: Text(entry.$2),
+                        selected: _workingDays.contains(entry.$1),
+                        onSelected: (selected) {
+                          setState(() {
+                            if (selected) {
+                              _workingDays.add(entry.$1);
+                              _workingDays.sort();
+                            } else {
+                              _workingDays.remove(entry.$1);
+                            }
+                          });
+                        },
+                      ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // Work hours
+                Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Start Hour',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<int>(
+                            value: _workDayStartHour,
+                            isExpanded: true,
+                            items: List.generate(
+                              24,
+                              (h) => DropdownMenuItem<int>(
+                                value: h,
+                                child: Text(
+                                    '${h.toString().padLeft(2, '0')}:00'),
+                              ),
+                            ),
+                            onChanged: (v) {
+                              if (v != null) {
+                                setState(() => _workDayStartHour = v);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('End Hour',
+                              style: Theme.of(context).textTheme.bodySmall),
+                          const SizedBox(height: 4),
+                          DropdownButton<int>(
+                            value: _workDayEndHour,
+                            isExpanded: true,
+                            items: List.generate(
+                              24,
+                              (h) => DropdownMenuItem<int>(
+                                value: h,
+                                child: Text(
+                                    '${h.toString().padLeft(2, '0')}:00'),
+                              ),
+                            ),
+                            onChanged: (v) {
+                              if (v != null) {
+                                setState(() => _workDayEndHour = v);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                // Public holidays
+                Row(
+                  children: [
+                    Text('Public Holidays',
+                        style: Theme.of(context).textTheme.bodySmall),
+                    const Spacer(),
+                    TextButton.icon(
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('Add Holiday'),
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: DateTime.now(),
+                          firstDate: DateTime(2000),
+                          lastDate: DateTime(2100),
+                        );
+                        if (picked != null) {
+                          final dateOnly = DateTime(
+                              picked.year, picked.month, picked.day);
+                          if (!_publicHolidays.any((d) =>
+                              d.year == dateOnly.year &&
+                              d.month == dateOnly.month &&
+                              d.day == dateOnly.day)) {
+                            setState(() {
+                              _publicHolidays.add(dateOnly);
+                              _publicHolidays.sort();
+                            });
+                          }
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                if (_publicHolidays.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: _publicHolidays
+                        .map(
+                          (d) => Chip(
+                            label: Text(
+                                DateFormat('MMM d, yyyy').format(d)),
+                            onDeleted: () {
+                              setState(() => _publicHolidays.remove(d));
+                            },
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+                ],
+                const SizedBox(height: 18),
+              ],
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
@@ -1753,6 +3811,44 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
                 ),
               ],
               const SizedBox(height: 18),
+              // ── Confidential toggle (SuperAdmin only) ──────────────
+              if (widget.isSuperAdmin) ...[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Confidential'),
+                  subtitle: const Text(
+                    'Mark this project as confidential. Only visible to assigned team members.',
+                  ),
+                  secondary: Icon(
+                    Icons.lock_rounded,
+                    color: _isConfidential
+                        ? Theme.of(context).colorScheme.error
+                        : null,
+                  ),
+                  value: _isConfidential,
+                  onChanged: (value) =>
+                      setState(() => _isConfidential = value),
+                ),
+                const SizedBox(height: 8),
+              ],
+              // ── Allow Sample Data toggle (Project Admin only) ────────
+              if (widget.canManageStatuses) ...[
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Allow Sample Data'),
+                  subtitle: const Text(
+                    'When enabled, project admins can generate sample tasks for this project.',
+                  ),
+                  secondary: const Icon(Icons.data_array_rounded),
+                  value: _allowSampleData,
+                  onChanged: (value) =>
+                      setState(() => _allowSampleData = value),
+                ),
+                const SizedBox(height: 8),
+              ],
+              const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
@@ -1813,6 +3909,109 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
                 enabled: widget.canManageStatuses,
                 onChanged: _toggleAssignee,
               ),
+
+              // ── User Permissions ────────────────────────────────────────
+              if (widget.canManageStatuses &&
+                  widget.initialProject != null) ...[
+                const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'User Permissions',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Grant Project Users the ability to add and update content on this project.',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...() {
+                  final projectUsers = widget.assignees
+                      .where(
+                        (a) =>
+                            a.role == AssigneeRole.projectUser &&
+                            _assignedAssigneeIds.contains(a.id),
+                      )
+                      .toList(growable: false);
+                  if (projectUsers.isEmpty) {
+                    return [
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'No Project Users are assigned to this project yet.',
+                        ),
+                      ),
+                    ];
+                  }
+                  return projectUsers.map((assignee) {
+                    final grants =
+                        _grantsByAssigneeId[assignee.id] ?? <String>{};
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            assignee.name,
+                            style: Theme.of(context).textTheme.bodyMedium
+                                ?.copyWith(fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 4),
+                          Wrap(
+                            spacing: 12,
+                            children: [
+                              _GrantCheckbox(
+                                label: 'Tasks',
+                                grant: ProjectGrant.tasks,
+                                grants: grants,
+                                onChanged: (updated) => setState(() =>
+                                    _grantsByAssigneeId[assignee.id] =
+                                        updated),
+                              ),
+                              _GrantCheckbox(
+                                label: 'Issues',
+                                grant: ProjectGrant.issues,
+                                grants: grants,
+                                onChanged: (updated) => setState(() =>
+                                    _grantsByAssigneeId[assignee.id] =
+                                        updated),
+                              ),
+                              _GrantCheckbox(
+                                label: 'Risks',
+                                grant: ProjectGrant.risks,
+                                grants: grants,
+                                onChanged: (updated) => setState(() =>
+                                    _grantsByAssigneeId[assignee.id] =
+                                        updated),
+                              ),
+                              _GrantCheckbox(
+                                label: 'Actions',
+                                grant: ProjectGrant.actions,
+                                grants: grants,
+                                onChanged: (updated) => setState(() =>
+                                    _grantsByAssigneeId[assignee.id] =
+                                        updated),
+                              ),
+                              _GrantCheckbox(
+                                label: 'Decisions',
+                                grant: ProjectGrant.decisions,
+                                grants: grants,
+                                onChanged: (updated) => setState(() =>
+                                    _grantsByAssigneeId[assignee.id] =
+                                        updated),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList();
+                }(),
+              ],
             ],
           ),
         ),
@@ -1834,6 +4033,17 @@ class _ProjectEditorDialogState extends State<_ProjectEditorDialog> {
               phases: _phases,
               taskStatuses: _statuses,
               assignedAssigneeIds: _assignedAssigneeIds.toList(growable: false),
+              isConfidential: _isConfidential,
+              grantsByAssigneeId: _grantsByAssigneeId,
+              actualStartStatus: _actualStartStatus,
+              actualEndStatus: _actualEndStatus,
+              actualStartResetStatus: _actualStartResetStatus,
+              actualEndResetStatus: _actualEndResetStatus,
+              allowSampleData: _allowSampleData,
+              workingDays: _workingDays,
+              workDayStartHour: _workDayStartHour,
+              workDayEndHour: _workDayEndHour,
+              publicHolidays: _publicHolidays,
             );
             if (context.mounted) {
               Navigator.of(context).pop();
@@ -2055,6 +4265,7 @@ class _ProjectTaskEditorDialog extends StatefulWidget {
     required this.assignees,
     required this.allTasks,
     this.initialTask,
+    this.readOnly = false,
   });
 
   final AppController controller;
@@ -2062,6 +4273,7 @@ class _ProjectTaskEditorDialog extends StatefulWidget {
   final List<AssigneeModel> assignees;
   final List<TaskModel> allTasks;
   final TaskModel? initialTask;
+  final bool readOnly;
 
   @override
   State<_ProjectTaskEditorDialog> createState() =>
@@ -2071,12 +4283,15 @@ class _ProjectTaskEditorDialog extends StatefulWidget {
 class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
   late final TextEditingController _titleController;
   late final TextEditingController _notesController;
+  late final TextEditingController _durationController;
+  final TextEditingController _predecessorSearchController = TextEditingController();
   late String _status;
   late TaskPriority _priority;
   late bool _isMilestone;
   late Set<String> _predecessorTaskCodes;
   String? _assigneeId;
   String? _phaseId;
+  DateTime? _startDate;
   DateTime? _dueDate;
 
   @override
@@ -2088,6 +4303,11 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
     _notesController = TextEditingController(
       text: widget.initialTask?.notes ?? '',
     );
+    _durationController = TextEditingController(
+      text: widget.initialTask?.duration ?? '',
+    );
+    _durationController.addListener(() => setState(() {}));
+    _predecessorSearchController.addListener(() => setState(() {}));
     _status = widget.initialTask?.status ?? widget.project.taskStatuses.first;
     _priority = widget.initialTask?.priority ?? TaskPriority.medium;
     _isMilestone = widget.initialTask?.isMilestone ?? false;
@@ -2097,29 +4317,76 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
     _assigneeId = widget.initialTask?.assigneeId;
     _phaseId = widget.initialTask?.phaseId;
     _dueDate = widget.initialTask?.dueDate;
+
+    // Recompute start date from predecessor end dates so stale stored values
+    // are corrected each time the dialog opens.
+    if (_predecessorTaskCodes.isNotEmpty) {
+      DateTime? latest;
+      for (final code in _predecessorTaskCodes) {
+        final pred = widget.allTasks.cast<TaskModel?>()
+            .firstWhere((t) => t?.taskCode == code, orElse: () => null);
+        final predEnd = (pred == null)
+            ? null
+            : computeTaskEndDate(pred, widget.project) ?? pred.dueDate;
+        if (predEnd != null &&
+            (latest == null || predEnd.isAfter(latest))) {
+          latest = predEnd;
+        }
+      }
+      _startDate = latest ?? widget.initialTask?.startDate;
+    } else {
+      _startDate = widget.initialTask?.startDate;
+    }
   }
 
   @override
   void dispose() {
     _titleController.dispose();
     _notesController.dispose();
+    _durationController.dispose();
+    _predecessorSearchController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final availablePredecessors = widget.allTasks
-        .where((task) => task.id != widget.initialTask?.id)
+    final predSearchQuery =
+        _predecessorSearchController.text.trim().toLowerCase();
+    final availablePredecessors = (widget.allTasks
+            .where((task) => task.id != widget.initialTask?.id)
+            .toList(growable: false)
+          ..sort((a, b) => a.taskCode.compareTo(b.taskCode)))
+        .where((t) =>
+            predSearchQuery.isEmpty ||
+            t.taskCode.toLowerCase().contains(predSearchQuery) ||
+            t.title.toLowerCase().contains(predSearchQuery))
         .toList(growable: false);
+    final endDate = (_startDate != null &&
+            _durationController.text.trim().isNotEmpty)
+        ? applyTaskDuration(
+            _startDate!,
+            _durationController.text.trim(),
+            workingDays: widget.project.workingDays,
+            workDayStartHour: widget.project.workDayStartHour,
+            workDayEndHour: widget.project.workDayEndHour,
+            publicHolidays: widget.project.publicHolidays,
+          )
+        : null;
     final previewTaskCode = widget.controller.previewNextTaskCode(
       widget.project.id,
       existingTaskId: widget.initialTask?.id,
     );
 
     return AlertDialog(
-      title: Text(widget.initialTask == null ? 'New task' : 'Edit task'),
+      title: Text(
+        widget.initialTask == null
+            ? 'New task'
+            : widget.readOnly
+                ? 'Task Details'
+                : 'Edit task',
+      ),
       content: SizedBox(
-        width: 560,
+        width: (MediaQuery.of(context).size.width * 0.9).clamp(280.0, 560.0),
         child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -2132,6 +4399,7 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
               TextField(
                 controller: _titleController,
                 decoration: const InputDecoration(labelText: 'Task title'),
+                enabled: !widget.readOnly,
               ),
               const SizedBox(height: 14),
               DropdownButtonFormField<String>(
@@ -2145,7 +4413,9 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                       ),
                     )
                     .toList(growable: false),
-                onChanged: (value) => setState(() => _status = value!),
+                onChanged: widget.readOnly
+                    ? null
+                    : (value) => setState(() => _status = value!),
               ),
               const SizedBox(height: 14),
               DropdownButtonFormField<String?>(
@@ -2163,7 +4433,9 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                     ),
                   ),
                 ],
-                onChanged: (value) => setState(() => _assigneeId = value),
+                onChanged: widget.readOnly
+                    ? null
+                    : (value) => setState(() => _assigneeId = value),
               ),
               const SizedBox(height: 14),
               DropdownButtonFormField<String?>(
@@ -2181,7 +4453,60 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                     ),
                   ),
                 ],
-                onChanged: (value) => setState(() => _phaseId = value),
+                onChanged: widget.readOnly
+                    ? null
+                    : (value) => setState(() => _phaseId = value),
+              ),
+              const SizedBox(height: 14),
+              // ── Start date ────────────────────────────────────────────
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _startDate == null
+                          ? 'No start date'
+                          : 'Start: ${DateFormat('MMM d, yyyy HH:mm').format(_startDate!)}',
+                    ),
+                  ),
+                  if (!widget.readOnly) ...[
+                    TextButton(
+                      onPressed: _pickStartDate,
+                      child: const Text('Pick'),
+                    ),
+                    if (_startDate != null)
+                      TextButton(
+                        onPressed: () => setState(() => _startDate = null),
+                        child: const Text('Clear'),
+                      ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 14),
+              // ── Duration ──────────────────────────────────────────────
+              TextField(
+                controller: _durationController,
+                decoration: const InputDecoration(
+                  labelText: 'Duration',
+                  hintText: 'e.g. 5d',
+                  helperText: '5 = 5 hrs · 5d = days · 2w = weeks · 1mo = months',
+                ),
+                enabled: !widget.readOnly,
+              ),
+              const SizedBox(height: 8),
+              // ── End date (derived) ────────────────────────────────────
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  endDate == null
+                      ? 'End date: —'
+                      : 'End date: ${DateFormat('MMM d, yyyy HH:mm').format(endDate)}',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .onSurface
+                            .withValues(alpha: 0.65),
+                      ),
+                ),
               ),
               const SizedBox(height: 14),
               Row(
@@ -2198,7 +4523,9 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                             ),
                           )
                           .toList(growable: false),
-                      onChanged: (value) => setState(() => _priority = value!),
+                      onChanged: widget.readOnly
+                          ? null
+                          : (value) => setState(() => _priority = value!),
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -2207,8 +4534,9 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Milestone'),
                       value: _isMilestone,
-                      onChanged: (value) =>
-                          setState(() => _isMilestone = value),
+                      onChanged: widget.readOnly
+                          ? null
+                          : (value) => setState(() => _isMilestone = value),
                     ),
                   ),
                 ],
@@ -2219,6 +4547,7 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                 decoration: const InputDecoration(labelText: 'Notes'),
                 minLines: 3,
                 maxLines: 5,
+                enabled: !widget.readOnly,
               ),
               const SizedBox(height: 14),
               Align(
@@ -2229,10 +4558,33 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                 ),
               ),
               const SizedBox(height: 8),
-              if (availablePredecessors.isEmpty)
+              TextField(
+                controller: _predecessorSearchController,
+                decoration: InputDecoration(
+                  hintText: 'Search by ID or title…',
+                  prefixIcon: const Icon(Icons.search, size: 18),
+                  suffixIcon: predSearchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear, size: 16),
+                          onPressed: () => _predecessorSearchController.clear(),
+                        )
+                      : null,
+                  isDense: true,
+                ),
+                enabled: !widget.readOnly,
+              ),
+              const SizedBox(height: 8),
+              if (widget.allTasks
+                      .where((t) => t.id != widget.initialTask?.id)
+                      .isEmpty)
                 const Align(
                   alignment: Alignment.centerLeft,
                   child: Text('No candidate predecessors in this project yet.'),
+                )
+              else if (availablePredecessors.isEmpty)
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('No tasks match the search.'),
                 )
               else
                 Wrap(
@@ -2245,15 +4597,12 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                           selected: _predecessorTaskCodes.contains(
                             task.taskCode,
                           ),
-                          onSelected: (selected) {
-                            setState(() {
-                              if (selected) {
-                                _predecessorTaskCodes.add(task.taskCode);
-                              } else {
-                                _predecessorTaskCodes.remove(task.taskCode);
-                              }
-                            });
-                          },
+                          onSelected: widget.readOnly
+                              ? null
+                              : (selected) => _onPredecessorToggled(
+                                    task.taskCode,
+                                    selected,
+                                  ),
                         ),
                       )
                       .toList(growable: false),
@@ -2264,68 +4613,155 @@ class _ProjectTaskEditorDialogState extends State<_ProjectTaskEditorDialog> {
                   Expanded(
                     child: Text(
                       _dueDate == null
-                          ? 'No due date selected'
-                          : 'Due ${DateFormat('MMM d, yyyy').format(_dueDate!)}',
+                          ? 'No target date selected'
+                          : 'Target ${DateFormat('MMM d, yyyy HH:mm').format(_dueDate!)}',
                     ),
                   ),
-                  TextButton(
-                    onPressed: _pickDate,
-                    child: const Text('Pick date'),
-                  ),
-                  if (_dueDate != null)
+                  if (!widget.readOnly) ...[
                     TextButton(
-                      onPressed: () => setState(() => _dueDate = null),
-                      child: const Text('Clear'),
+                      onPressed: _pickDate,
+                      child: const Text('Pick date'),
                     ),
+                    if (_dueDate != null)
+                      TextButton(
+                        onPressed: () => setState(() => _dueDate = null),
+                        child: const Text('Clear'),
+                      ),
+                  ],
                 ],
               ),
             ],
           ),
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        ElevatedButton(
-          onPressed: () async {
-            await widget.controller.saveTask(
-              title: _titleController.text,
-              notes: _notesController.text,
-              projectId: widget.project.id,
-              status: _status,
-              priority: _priority,
-              dueDate: _dueDate,
-              isMilestone: _isMilestone,
-              predecessorTaskCodes: _predecessorTaskCodes.toList(
-                growable: false,
+      actions: widget.readOnly
+          ? [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Close'),
               ),
-              phaseId: _phaseId,
-              assigneeId: _assigneeId,
-              taskId: widget.initialTask?.id,
-            );
-            if (context.mounted) {
-              Navigator.of(context).pop();
-            }
-          },
-          child: const Text('Save'),
-        ),
-      ],
+            ]
+          : [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  await widget.controller.saveTask(
+                    title: _titleController.text,
+                    notes: _notesController.text,
+                    projectId: widget.project.id,
+                    status: _status,
+                    priority: _priority,
+                    startDate: _startDate,
+                    duration: _durationController.text.trim(),
+                    dueDate: _dueDate,
+                    isMilestone: _isMilestone,
+                    predecessorTaskCodes: _predecessorTaskCodes.toList(
+                      growable: false,
+                    ),
+                    phaseId: _phaseId,
+                    assigneeId: _assigneeId,
+                    taskId: widget.initialTask?.id,
+                    actualStartDate: _status == widget.project.actualStartStatus
+                        ? DateTime.now()
+                        : _status == widget.project.actualStartResetStatus
+                            ? null
+                            : widget.initialTask?.actualStartDate,
+                    actualEndDate: _status == widget.project.actualEndStatus
+                        ? DateTime.now()
+                        : _status == widget.project.actualEndResetStatus
+                            ? null
+                            : widget.initialTask?.actualEndDate,
+                  );
+                  if (context.mounted) {
+                    Navigator.of(context).pop();
+                  }
+                },
+                child: const Text('Save'),
+              ),
+            ],
     );
   }
 
   Future<void> _pickDate() async {
-    final now = DateTime.now();
-    final selected = await showDatePicker(
-      context: context,
-      firstDate: DateTime(now.year - 1),
-      lastDate: DateTime(now.year + 5),
-      initialDate: _dueDate ?? now,
-    );
-    if (selected != null) {
-      setState(() => _dueDate = selected);
+    final picked = await _pickDateTime(context, _dueDate);
+    if (picked != null) {
+      setState(() => _dueDate = picked);
     }
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await _pickDateTime(context, _startDate);
+    if (picked != null) {
+      setState(() => _startDate = picked);
+    }
+  }
+
+  void _onPredecessorToggled(String taskCode, bool selected) {
+    setState(() {
+      if (selected) {
+        _predecessorTaskCodes.add(taskCode);
+      } else {
+        _predecessorTaskCodes.remove(taskCode);
+      }
+      if (_predecessorTaskCodes.isEmpty) {
+        _startDate = null;
+        return;
+      }
+      // Auto-fill start date = max(endDate ?? dueDate of all selected predecessors)
+      DateTime? latest;
+      for (final code in _predecessorTaskCodes) {
+        final pred = widget.allTasks
+            .cast<TaskModel?>()
+            .firstWhere((t) => t?.taskCode == code, orElse: () => null);
+        final predEnd = (pred == null)
+            ? null
+            : computeTaskEndDate(pred, widget.project) ?? pred.dueDate;
+        if (predEnd != null &&
+            (latest == null || predEnd.isAfter(latest))) {
+          latest = predEnd;
+        }
+      }
+      if (latest != null) _startDate = latest;
+    });
+  }
+}
+
+class _GrantCheckbox extends StatelessWidget {
+  const _GrantCheckbox({
+    required this.label,
+    required this.grant,
+    required this.grants,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String grant;
+  final Set<String> grants;
+  final ValueChanged<Set<String>> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Checkbox(
+          value: grants.contains(grant),
+          onChanged: (checked) {
+            final updated = Set<String>.from(grants);
+            if (checked == true) {
+              updated.add(grant);
+            } else {
+              updated.remove(grant);
+            }
+            onChanged(updated);
+          },
+        ),
+        Text(label),
+      ],
+    );
   }
 }
 
@@ -2382,8 +4818,8 @@ class _StatCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      width: 160,
+    return ConstrainedBox(
+      constraints: const BoxConstraints(minWidth: 120, maxWidth: 200),
       child: Card(
         child: Padding(
           padding: const EdgeInsets.all(18),
@@ -2440,6 +4876,37 @@ String _formatDate(DateTime? value) {
     return 'Not set';
   }
   return DateFormat('MMM d, yyyy').format(value);
+}
+
+/// Formats a date+time value for task start / target date display.
+String _formatDateTime(DateTime? value) {
+  if (value == null) return '—';
+  return DateFormat('MMM d, yyyy HH:mm').format(value);
+}
+
+/// Shows a date picker followed by a time picker and returns the combined
+/// [DateTime], or `null` if the user cancels either step.
+Future<DateTime?> _pickDateTime(
+  BuildContext context,
+  DateTime? initial,
+) async {
+  final now = DateTime.now();
+  final date = await showDatePicker(
+    context: context,
+    initialDate: initial ?? now,
+    firstDate: DateTime(2000),
+    lastDate: DateTime(2100),
+  );
+  if (date == null) return null;
+  if (!context.mounted) return null;
+  final time = await showTimePicker(
+    context: context,
+    initialTime: initial != null
+        ? TimeOfDay.fromDateTime(initial)
+        : const TimeOfDay(hour: 9, minute: 0),
+  );
+  if (time == null) return null;
+  return DateTime(date.year, date.month, date.day, time.hour, time.minute);
 }
 
 extension on String {

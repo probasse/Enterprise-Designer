@@ -51,12 +51,19 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
               constraints: const BoxConstraints(maxWidth: 1180),
               child: Padding(
                 padding: const EdgeInsets.all(24),
-                child: Wrap(
-                  spacing: 24,
-                  runSpacing: 24,
-                  children: [
-                    SizedBox(
-                      width: 420,
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final isWide = constraints.maxWidth >= 700;
+                    final infoWidth = isWide
+                        ? (constraints.maxWidth * 0.36).clamp(280.0, 440.0)
+                        : constraints.maxWidth;
+                    final formWidth = isWide
+                        ? (constraints.maxWidth - infoWidth - 24)
+                            .clamp(300.0, 700.0)
+                        : constraints.maxWidth;
+
+                    final infoCard = SizedBox(
+                      width: infoWidth,
                       child: SectionCard(
                         title: 'Bring your own Firebase',
                         subtitle:
@@ -64,38 +71,30 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text(
-                              'Before you continue',
-                              style: theme.textTheme.titleLarge,
-                            ),
+                            Text('Before you continue',
+                                style: theme.textTheme.titleLarge),
                             const SizedBox(height: 16),
                             const _ChecklistItem(
-                              text:
-                                  'Create a Firebase web app and copy its web config values.',
-                            ),
+                                text:
+                                    'Create a Firebase web app and copy its web config values.'),
                             const _ChecklistItem(
-                              text:
-                                  'Enable Email/Password under Authentication > Sign-in method.',
-                            ),
+                                text:
+                                    'Enable Email/Password under Authentication > Sign-in method.'),
                             const _ChecklistItem(
-                              text:
-                                  'Create a Cloud Firestore database and allow the signed-in user to read/write their own data.',
-                            ),
+                                text:
+                                    'Create a Cloud Firestore database and allow the signed-in user to read/write their own data.'),
                             const _ChecklistItem(
-                              text:
-                                  'Add your deployment domain to Authentication > Settings > Authorized domains.',
-                            ),
+                                text:
+                                    'Add your deployment domain to Authentication > Settings > Authorized domains.'),
                             const _ChecklistItem(
-                              text:
-                                  'Optional: add assets/firebase_credentials.js to the app bundle and it will connect automatically when the app starts.',
-                            ),
+                                text:
+                                    'Optional: add assets/firebase_credentials.js to the app bundle and it will connect automatically when the app starts.'),
                             const SizedBox(height: 22),
                             Container(
                               padding: const EdgeInsets.all(16),
                               decoration: BoxDecoration(
-                                color: theme.colorScheme.secondary.withValues(
-                                  alpha: 0.08,
-                                ),
+                                color: theme.colorScheme.secondary
+                                    .withValues(alpha: 0.08),
                                 borderRadius: BorderRadius.circular(20),
                               ),
                               child: Text(
@@ -106,9 +105,10 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
                           ],
                         ),
                       ),
-                    ),
-                    SizedBox(
-                      width: 680,
+                    );
+
+                    final formCard = SizedBox(
+                      width: formWidth,
                       child: SectionCard(
                         title: 'Firebase web configuration',
                         subtitle:
@@ -121,10 +121,8 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
                               const SizedBox(height: 14),
                               _buildField(_appIdController, 'App ID'),
                               const SizedBox(height: 14),
-                              _buildField(
-                                _messagingSenderIdController,
-                                'Messaging sender ID',
-                              ),
+                              _buildField(_messagingSenderIdController,
+                                  'Messaging sender ID'),
                               const SizedBox(height: 14),
                               _buildField(_projectIdController, 'Project ID'),
                               const SizedBox(height: 14),
@@ -153,8 +151,30 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
                           ),
                         ),
                       ),
-                    ),
-                  ],
+                    );
+
+                    if (isWide) {
+                      return SingleChildScrollView(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            infoCard,
+                            const SizedBox(width: 24),
+                            formCard,
+                          ],
+                        ),
+                      );
+                    }
+                    return SingleChildScrollView(
+                      child: Column(
+                        children: [
+                          infoCard,
+                          const SizedBox(height: 24),
+                          formCard,
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -172,12 +192,8 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
     return TextFormField(
       controller: controller,
       validator: (value) {
-        if (!required) {
-          return null;
-        }
-        if (value == null || value.trim().isEmpty) {
-          return '$label is required.';
-        }
+        if (!required) return null;
+        if (value == null || value.trim().isEmpty) return '$label is required.';
         return null;
       },
       decoration: InputDecoration(labelText: label),
@@ -185,10 +201,7 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
   }
 
   Future<void> _saveConfig() async {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
+    if (!_formKey.currentState!.validate()) return;
     final config = FirebaseRuntimeConfig(
       apiKey: _apiKeyController.text,
       appId: _appIdController.text,
@@ -199,7 +212,6 @@ class _FirebaseSetupScreenState extends State<FirebaseSetupScreen> {
           ? null
           : _storageBucketController.text,
     );
-
     await widget.controller.configureFirebase(config);
   }
 }
